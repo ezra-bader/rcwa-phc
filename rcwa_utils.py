@@ -532,7 +532,7 @@ RU_MATERIALS = {
         'CrSBr': DispersiveUniaxialMaterial('CrSBr', 'crsbr_nk_yinming.txt', 
                                             n_a = 3.0, n_c = 3.0),
         'MoOCl2': DispersiveBiaxialMaterial('MoOCl2',
-                                            'MoOCl2_nm_nxx_kxx_nyy_kyy_nzz_kzz.csv',
+                                            'moocl2_nm_nxx_kxx_nyy_kyy_nzz_kzz.csv',
                                             delimiter=',', reverse=True),
         'ReS2': BirefringentMaterial('ReS2', eps0=18.0, delta_eps=1.7, eps_zz=7.25),
         'LC': UniaxialMaterial('LC',n_o=1.50,n_e=1.91)
