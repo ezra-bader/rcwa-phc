@@ -501,16 +501,16 @@ class Layer:
     def __repr__(self):
         match self.pattern:
             case 'hole' | 'pillar':
-                pat = f', {self.pattern}, ff={self.ff},'
+                pat = f', {self.pattern}, ff={self.ff}'
             case 'cuboids':
-                pat = f', w0={self.w0}, α={self.alpha},'
+                pat = f', {self.pattern}, w0={self.w0}, α={self.alpha}'
             case None:
                 pat = ''
             case _:
                 raise ValueError("Unknown pattern entered.")
         match self.layer_rot:
             case None | 0.0 | 0:
-                rot = f', rot={0:.0f}°'
+                rot = ''
             case _:
                 rot = f', rot={self.layer_rot:.0f}°'
         match self.layer_tilt:
@@ -754,7 +754,8 @@ class RCWAConfig:
         out = Path(path)
         with open(out, 'w') as f:
             json.dump(config_dict, f, indent=4, check_circular=False)
-        print(f"Config saved to {out.name}.")
+        print(f'{out.parent}\n|\n|\nV')
+        print(f"Config saved as {out.name}")
 
     @classmethod
     def load(cls, json_path):
@@ -1374,11 +1375,14 @@ def convergence_test(conf: object, lam_nm: float = None, elev_deg=5.0, azim_deg=
     layers = conf.layers
     lam_nm = lam_nm or float(np.median(conf.wavelengths))
     rot = conf.global_rot or 0.0
+    tilt = conf.global_tilt or 0.0
 
-    print(f"Convergence test: lambda={lam_nm:.0f} nm  elev={elev_deg:.1f} deg  "
-          f"azim={azim_deg:.0f} deg  rot={rot:.0f} deg")
+    # print()
+    print(f'%--'*30)
+    print(f"Convergence test: λ={lam_nm:.0f} nm  elev={elev_deg:.1f}°  "
+          f"azim={azim_deg:.0f}°  rot={rot:.0f}°  tilt={tilt:.0f}°")
     print(f"Stack: {' | '.join(repr(L) for L in layers)}")
-    print(f"{'NumBasis':>10}  {'T_ss':>10}  {'T_pp':>10}  {'|dT_ss|':>10}  {'time(ms)':>10}")
+    print(f"| {'NumBasis':>10}  {'T_ss':>10}  {'T_pp':>10}  {'|dT_ss|':>10}  {'time(ms)':>10}")
 
     prev = None
     for nb in basis_vals:
@@ -1390,23 +1394,27 @@ def convergence_test(conf: object, lam_nm: float = None, elev_deg=5.0, azim_deg=
         Tss  = abs(T[0,0])**2
         Tpp  = abs(T[1,1])**2
         delta = abs(Tss - prev) if prev is not None else float('nan')
-        print(f"{nb:>10d}  {Tss:>10.5f}  {Tpp:>10.5f}  {delta:>10.5f}  {dt:>10.1f}")
+        print(f"| {nb:>10d}  {Tss:>10.5f}  {Tpp:>10.5f}  {delta:>10.5f}  {dt:>10.1f}")
         prev = Tss
+    # print(f'%'*90)
 
 def convergence_test_phase(conf:object, lam_nm=None, elev_deg=5.0, azim_deg=0.0,
-                            rot_deg=0.0,
                             basis_vals=(49, 81, 100, 144, 196, 256)):
     """
     Sweep NumBasis and report phase of t_ss and CD — these converge faster
     than amplitude and are the quantities that matter for polarization topology.
     """
-    conf = conf
+
     if lam_nm is None:
         lam_nm = float(np.median(conf.wavelengths))
+    rot = conf.global_rot or 0.0
+    tilt = conf.global_tilt or 0.0
 
-    print(f"Phase convergence: lambda={lam_nm:.0f} nm  elev={elev_deg:.1f} deg  "
-          f"azim={azim_deg:.0f} deg  rot={rot_deg:.0f} deg")
-    print(f"{'NumBasis':>10}  {'|t_ss|':>10}  {'phase_ss (deg)':>16}  "
+    # print()
+    print(f'%--'*30)
+    print(f"Phase convergence: λ={lam_nm:.0f} nm  elev={elev_deg:.1f}°  "
+          f"azim={azim_deg:.0f}°    rot={rot:.0f}°    tilt={tilt:.0f}°")
+    print(f"| {'NumBasis':>10}  {'|t_ss|':>10}  {'phase_ss (deg)':>16}  "
           f"{'CD':>10}  {'time(ms)':>10}")
     for nb in basis_vals:
         t0   = time.perf_counter()
@@ -1417,26 +1425,27 @@ def convergence_test_phase(conf:object, lam_nm=None, elev_deg=5.0, azim_deg=0.0,
         phase = np.degrees(np.angle(T[0,0]))
         Tc    = jones_to_circular(T)
         CD    = abs(Tc[0,0])**2 - abs(Tc[1,1])**2
-        print(f"{nb:>10d}  {abs(T[0,0]):>10.5f}  {phase:>16.3f}  "
+        print(f"| {nb:>10d}  {abs(T[0,0]):>10.5f}  {phase:>16.3f}  "
               f"{CD:>10.5f}  {dt:>10.1f}")
+    # print(f'%'*90)
 
 # ── Wavelength scan (to find resonances) ─────────────────────────────────────────
 
-def scan_wavelengths(conf: object, lam_vals=None, n_basis=49, elev_deg=0.0, azim_deg=0.0,
-                     rot_deg=0.0):
+def scan_wavelengths(conf: object, lam_vals = None, n_basis=25, elev_deg=0.0, azim_deg=0.0):
     """
     Scan T_ss and T_pp across wavelengths at normal (or near-normal) incidence
     to locate resonance dips before running full sweeps.
     """
   
-    if lam_vals is None:
-        lam_vals = conf.wavelengths[::5]   # every 5th point for speed
-    if n_basis is None:
-        n_basis = conf.n_basis
-    conf = conf
+    lam_vals = lam_vals or conf.wavelengths[::4]  # every 5th point for speed
+    n_basis = n_basis or conf.n_basis
+    rot = conf.global_rot or 0.0
+    tilt = conf.global_tilt or 0.0
 
-    print(f"Wavelength scan: elev={elev_deg:.1f} deg  azim={azim_deg:.0f} deg  "
-          f"rot={rot_deg:.0f} deg  N_BASIS={n_basis}")
+    # print()
+    print(f'%--'*30)
+    print(f"Wavelength scan: elev={elev_deg:.1f}°  azim={azim_deg:.0f}°  "
+          f"rot={rot:.0f}°      tilt={tilt:.0f}°    N_BASIS={n_basis}")
     print(f"{'lam (nm)':>10}  {'energy (eV)':>12}  {'T_ss':>10}  "
           f"{'T_pp':>10}  {'T_ss+T_pp':>12}")
 
@@ -1451,6 +1460,7 @@ def scan_wavelengths(conf: object, lam_vals=None, n_basis=49, elev_deg=0.0, azim
         Tpp  = abs(T[1,1])**2
         print(f"{lam:>10.1f}  {1239.8/lam:>12.4f}  {Tss:>10.5f}  "
               f"{Tpp:>10.5f}  {Tss+Tpp:>12.5f}")
+    # print(f'%'*90)
 
 # ── Energy conservation check ─────────────────────────────────────────────────
 
@@ -1464,18 +1474,20 @@ def verify_energy_conservation(conf: object, lam_nm=None, elev_deg=10.0,
     state contamination between solves.
     """
     layers = conf.layers
-    if lam_nm is None:
-        lam_nm = float(np.median(conf.wavelengths))
+    lam_nm = lam_nm or float(np.median(conf.wavelengths))
+    rot = conf.global_rot or 0.0
+    tilt = conf.global_tilt or 0.0
 
     first_layer  = layers[0].get_material().name
     last_layer   = layers[-1].get_material().name
 
-    print(f"Energy conservation check")
-    print(f"  lambda={lam_nm:.0f} nm  elev={elev_deg:.1f} deg  "
-          f"azim={azim_deg:.0f} deg  rot={rot_deg:.0f} deg")
-    print(f"  Stack: {' | '.join(L.material if isinstance(L.material,str) else L.get_material().name for L in layers)}")
-    print(f"  Incident medium: {first_layer}  |  Substrate: {last_layer}")
-    print()
+    # print()
+    print(f'%--'*30)
+    print(f"Energy conservation check:")
+    print(f"|  λ={lam_nm:.0f} nm  elev={elev_deg:.1f}°  "
+          f"azim={azim_deg:.0f}°  rot={rot:.0f}°    tilt={tilt:.0f}°")
+    print(f"|  Stack: {' | '.join(L.material if isinstance(L.material,str) else L.get_material().name for L in layers)}")
+    print(f"|  Incident medium: {first_layer}  |  Substrate: {last_layer}")
 
     # ── Jones matrix (fresh simulation) ───────────────────────────────────────
     S = build_simulation(conf=conf, lam_nm=lam_nm)
@@ -1483,10 +1495,10 @@ def verify_energy_conservation(conf: object, lam_nm=None, elev_deg=10.0,
     T, _ = get_jones_matrices(S, elev_deg, azim_deg, conf=conf)
 
     print(f"Jones T matrix:")
-    print(f"           s-in           p-in")
-    print(f"  s-out  {T[0,0]:>+.4f}   {T[0,1]:>+.4f}")
-    print(f"  p-out  {T[1,0]:>+.4f}   {T[1,1]:>+.4f}")
-    print()
+    print(f"|           s-in           p-in")
+    print(f"|  s-out  {T[0,0]:>+.4f}   {T[0,1]:>+.4f}")
+    print(f"|  p-out  {T[1,0]:>+.4f}   {T[1,1]:>+.4f}")
+    print(f"V")
 
     # ── PowerFlux check (separate fresh simulation per polarization) ───────────
     # GetPowerFlux Layer names are the layer names assigned in build_simulation:
@@ -1496,7 +1508,7 @@ def verify_energy_conservation(conf: object, lam_nm=None, elev_deg=10.0,
 
     print(f"{'input':>6}  {'T_jones':>10}  {'T_pf':>10}  "
           f"{'R_pf':>10}  {'A':>10}  {'T+R+A':>10}")
-
+    print('-'*68)
     for j, (sa, pa, label) in enumerate([(1,0,'s-in'), (0,1,'p-in')]):
         S2 = build_simulation(conf=conf, lam_nm=lam_nm)
         S2.SetFrequency(1.0 / lam_nm)
@@ -1513,7 +1525,7 @@ def verify_energy_conservation(conf: object, lam_nm=None, elev_deg=10.0,
 
         print(f"{label:>6}  {Tjones:>10.5f}  {Tpow:>10.5f}  "
               f"{Rpow:>10.5f}  {Apow:>10.5f}  {Tpow+Rpow+Apow:>10.6f}")
-
+    # print(f'%'*90)
 
 
 # -------- STUDY DEFINITIONS --------------------
@@ -2347,12 +2359,12 @@ def run_study1(conf: object, print_every=None):
 
     df = pd.DataFrame(all_rows)
 
+    print(f'%--'*30)
+    print(f"Study 1 done in {(time.perf_counter()-t0)/60:.1f} min")
+    
     fname = make_study_fname(1, conf)
     csv_path, _ = save_study(df, conf, fname)
-
-    print(f"Study 1 done in {(time.perf_counter()-t0)/60:.1f} min  ({len(df)} rows)")
-
-    print(f"  Saved -> {csv_path.name}  ({len(df)} rows)")
+    print(f"Data saved as {csv_path.name} ({len(df)} rows)")
     return df
 
 def quick_test_study1(conf: object):
