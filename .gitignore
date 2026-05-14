@@ -1,3 +1,10 @@
+# Study output files
+rcwa_output/
+*.mp4
+*.pdf
+*.csv
+*.json
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
