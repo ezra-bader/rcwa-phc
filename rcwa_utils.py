@@ -24,6 +24,7 @@ import shutil
 import dataclasses
 from dataclasses import dataclass, field, asdict
 import json
+from importlib import reload
 warnings.filterwarnings('ignore')
 
 # region Filename generation, tensor rotation helpers, material class definitions, layer class definitions
@@ -575,7 +576,7 @@ def DBR(n_pairs: int,
         high_index_mat: str = 'TiO2',
         low_index_mat:  str = 'SiO2',
         centerlam_nm:   float = 550,
-        reversed: bool = False) -> list:
+        orientation: str = 'top') -> list:
     """
     Returns a list of quarter-wave Layer pairs for one DBR mirror.
 
@@ -597,7 +598,7 @@ def DBR(n_pairs: int,
     d_H = centerlam_nm / (4 * _n(high_index_mat))
     d_L = centerlam_nm / (4 * _n(low_index_mat))
 
-    pair = [Layer(low_index_mat, d_L), Layer(high_index_mat, d_H)] if reversed \
+    pair = [Layer(low_index_mat, d_L), Layer(high_index_mat, d_H)] if orientation == 'top' \
       else [Layer(high_index_mat, d_H), Layer(low_index_mat,  d_L)]
 
     return pair * n_pairs
@@ -607,29 +608,52 @@ def check_layers(layers: list = None):
     if not layers:
         print(f"Please indicate layer stack to check.\nExample: check_layers(layers=LAYERS)")
         return
-    with tempfile.TemporaryFile(mode='w+t',encoding='utf-8') as temp:
-        for i, L in enumerate(layers):
-            if i == 0:
-                temp.write(f'\t\tmaterial\tthickness (nm)\t\tpattern\t\t\trot (°)\t\ttilt (°)\n')
-                temp.write('-'*105)
-            match L.layer_tilt:
-                case None | 0.0:
-                    tilt = '0'
-                case _:
-                    azim = L.layer_tilt_azim if L.layer_tilt_azim else 0
-                    tilt = f'{L.layer_tilt} @ azim {azim}°'
-            match L.pattern:
-                case None:
-                    temp.write(f'\nlayer {i}:\t{L.material}\t\t{L.thickness}\t\t\t{L.pattern}\t\t\t{L.layer_rot}\t\t{tilt}')
-                case 'hole' | 'pillar':
-                    temp.write(f'\nlayer {i}:\t{L.material}\t\t{L.thickness}\t\t\t{L.pattern}, ff={L.ff}\t\t{L.layer_rot}\t\t{tilt}')
-                case 'cuboids':
-                    temp.write(f'\nlayer {i}:\t{L.material}\t\t{L.thickness}\t\t\t{L.pattern}, w0={L.w0}, alpha={L.alpha}\t{L.layer_rot}\t\t{tilt}')
-        temp.seek(0)
-        print(temp.read())
-        # match save_prompt:
-        #     case True:
-        #         make_save_prompt(tempfile=temp)
+
+    # Column widths
+    CW = {'i': 8, 'mat': 12, 'thick': 22, 'pat': 24, 'rot': 12, 'tilt': 18}
+
+    header = (f"{'layer':<{CW['i']}}"
+              f"{'material':<{CW['mat']}}"
+              f"{'thickness (nm)':<{CW['thick']}}"
+              f"{'pattern':<{CW['pat']}}"
+              f"{'rot (°)':<{CW['rot']}}"
+              f"{'tilt (°)':<{CW['tilt']}}")
+    divider = '-' * sum(CW.values())
+
+    lines = [header, divider]
+
+    for i, L in enumerate(layers):
+        # Format thickness to 2 decimal places
+        thick = f'{L.thickness:.2f}'
+
+        # Format pattern
+        match L.pattern:
+            case None:
+                pat = 'None'
+            case 'hole' | 'pillar':
+                pat = f'{L.pattern}, ff={L.ff}'
+            case 'cuboids':
+                pat = f'cuboids, w0={L.w0}, a={L.alpha}'
+
+        # Format rot
+        rot = 'None' if L.layer_rot is None else f'{L.layer_rot:.1f}'
+
+        # Format tilt
+        match L.layer_tilt:
+            case None | 0.0:
+                tilt = '0'
+            case _:
+                azim = L.layer_tilt_azim if L.layer_tilt_azim else 0
+                tilt = f'{L.layer_tilt:.1f} @ azim {azim:.0f}°'
+
+        lines.append(f"{f'{i}':<{CW['i']}}"
+                     f"{str(L.material):<{CW['mat']}}"
+                     f"{thick:<{CW['thick']}}"
+                     f"{pat:<{CW['pat']}}"
+                     f"{rot:<{CW['rot']}}"
+                     f"{tilt:<{CW['tilt']}}")
+
+    print('\n'.join(lines))
 
 
 # -- Making angle values, pairs for angle-resolve studies
@@ -1646,7 +1670,7 @@ class ProgressCallback:
 # —— Study 0 plot ——————————————————————————————————————————————————————————————
 
 def plot_study0(df, conf: object,
-                quantities=None, save_fig=False) -> plt.fig:
+                quantities=None, save_fig=False) -> plt.figure:
     """
     Plot R, T, A spectra from Study 0.
 
@@ -1698,7 +1722,7 @@ def plot_study0(df, conf: object,
 def plot_study1(df, conf: object, rot_deg: float = None, tilt_deg: float = None, tilt_azim_deg: float = None,
                 azim_vals=None, x_col='elev',
                 elev_range=None, S1max=1.0, S3max=1.0, CDmax=1.0,
-                save_fig=False) -> plt.fig:
+                save_fig=False):
     """
     E vs k dispersion plots.
 
@@ -1807,7 +1831,7 @@ def plot_study1(df, conf: object, rot_deg: float = None, tilt_deg: float = None,
 def plot_kxky_grid(df, conf: object,
                    energies_eV = None,
                    save_fig: bool = False,
-                   quantities = None) -> plt.fig:
+                   quantities = None):
     """
     Grid of kx-ky maps at selected energies.
     Uses griddata interpolation onto uniform grid with disk mask.
@@ -1887,7 +1911,7 @@ def plot_kxky_grid(df, conf: object,
     return fig
 
 def plot_polarization_kxky(df, conf: object, energy_eV, layers=None, a=None,
-                            rot_deg=0.0, save_fig=False) -> plt.fig:
+                            rot_deg=0.0, save_fig=False):
     """
     kx-ky maps of polarization orientation angle psi and ellipticity chi.
     C-points (BIC-derived vortices) appear as phase singularities in psi
