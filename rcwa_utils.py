@@ -542,7 +542,7 @@ class Layer:
                 tilt_azim = ''
             case _:
                 tilt_azim = f', tiltazim={self.layer_tilt_azim:.0f}°'
-        return f"Layer({self.material}, {self.thickness}nm{pat}{rot}{tilt}{tilt_azim})"
+        return f"Layer({self.material}, {self.thickness:.2f}nm{pat}{rot}{tilt}{tilt_azim})"
 
 #endregion
 
@@ -837,7 +837,7 @@ RU_MATERIAL_COLORS = {
     'CrSBr':  ('goldenrod',      'saddlebrown', 0.60),
     'MoOCl2': ('darkgoldenrod',  'saddlebrown',   0.70),
     'ReS2':   ('mediumpurple',   'indigo',        0.70),
-    'LC':     ('palegreen',      'darkgreen',     0.60),
+    'LC':     ('bisque',      'orange',     0.60),
 }
 def get_material_colors():
     return RU_MATERIAL_COLORS
@@ -934,6 +934,127 @@ def plot_refractive_index(conf: object, layers=None, materials=None,
         plt.tight_layout()
         plt.show()
 
+def _make_unit_cell_title(layers: list, a: float) -> str:
+    '''Builds compact stack title for plot_unit_cell, collapsing repeating (nH, nL) or (nL, nH) DBR pairs.'''
+    # Build a flat list of (mat_name, thickness, pattern) entries, skipping Air padding
+    entries = []
+    for i, L in enumerate(layers):
+        mat = L.material if isinstance(L.material, str) else L.get_material().name
+        is_first = (i == 0)
+        is_last  = (i == len(layers) - 1)
+        if mat == 'Air' and L.pattern is None and (is_first or is_last):
+            continue
+        entries.append((mat, L.thickness, L.pattern, L.ff))
+
+    # Greedily collapse runs of alternating 2-layer pairs (DBR detection)
+    collapsed = []
+    i = 0
+    while i < len(entries):
+        # Try to match a repeating 2-layer unit starting at i
+        if i + 1 < len(entries):
+            unit = (entries[i], entries[i+1])
+            count = 1
+            j = i + 2
+            while j + 1 < len(entries) and (entries[j], entries[j+1]) == unit:
+                count += 1
+                j += 2
+            if count >= 2:  # only collapse if it actually repeats
+                m1, t1, p1, _ = unit[0]
+                m2, t2, p2, _ = unit[1]
+                collapsed.append(f'({m1}/{m2})×{count}')
+                i = j
+                continue
+        # Not a repeating pair — format single layer normally
+        mat, thick, pat, ff = entries[i]
+        seg = f'{mat} {thick:.0f}nm'
+        if pat in ('hole', 'pillar'):
+            seg += f' ({pat} ff={ff})'
+        elif pat == 'cuboids':
+            seg += f' (cuboids)'
+        collapsed.append(seg)
+        i += 1
+
+    return f"{'  |  '.join(collapsed)}"
+
+def _make_z_transform(layers: list, z_positions: list,
+                      compress_threshold_nm: float = 500.0,
+                      compressed_height_nm: float = 300.0):
+    """
+    Returns a function z_real -> z_plot that compresses any layer thicker
+    than compress_threshold_nm down to compressed_height_nm in plot space.
+    Also returns the total plot-space height.
+
+    Layers thinner than the threshold are plotted at true scale.
+    """
+    segments = []   # list of (z_real_start, z_real_end, z_plot_start, z_plot_end)
+    z_plot = 0.0
+
+    for L, z0 in zip(layers, z_positions):
+        z1 = z0 + L.thickness
+        dz_real = L.thickness
+        dz_plot = compressed_height_nm if dz_real > compress_threshold_nm else dz_real
+        segments.append((z0, z1, z_plot, z_plot + dz_plot))
+        z_plot += dz_plot
+
+    z_plot_total = z_plot
+
+    def transform(z_real):
+        """Map a real z coordinate to plot z coordinate."""
+        for z0r, z1r, z0p, z1p in segments:
+            if z0r <= z_real <= z1r:
+                # linear interpolation within segment
+                frac = (z_real - z0r) / (z1r - z0r) if (z1r - z0r) > 0 else 0.0
+                return z0p + frac * (z1p - z0p)
+        # clamp to ends
+        return 0.0 if z_real <= 0 else z_plot_total
+
+    return transform, z_plot_total
+
+def _make_zticks_transformed(layers, z_positions, transform, compress_threshold_nm=500.0):
+    """
+    Same DBR-aware tick logic as before, but returns
+    (real_z_values, plot_z_values, tick_labels).
+    Labels show true thickness, plot positions use compressed coords.
+    """
+    entries = []
+    for L, z0 in zip(layers, z_positions):
+        mat = L.material if isinstance(L.material, str) else L.get_material().name
+        entries.append((mat, z0, z0 + L.thickness))
+
+    z_total = entries[-1][2]
+    tick_reals = {0.0, z_total}
+
+    i = 0
+    while i < len(entries):
+        mat, z0, z1 = entries[i]
+        if mat == 'Air' and (i == 0 or i == len(entries) - 1):
+            i += 1
+            continue
+        if i + 1 < len(entries):
+            unit = (entries[i][0], entries[i+1][0])
+            count = 1
+            j = i + 2
+            while (j + 1 < len(entries) and
+                   entries[j][0] == unit[0] and
+                   entries[j+1][0] == unit[1]):
+                count += 1
+                j += 2
+            if count >= 2:
+                tick_reals.add(entries[i][1])
+                tick_reals.add(entries[j-1][2])
+                i = j
+                continue
+        tick_reals.add(z0)
+        tick_reals.add(z1)
+        i += 1
+
+    tick_reals = sorted(tick_reals)
+    tick_plots  = [transform(z) for z in tick_reals]
+    tick_labels = [f'{z/1000:.2f}' if z >= 1000 else f'{z/1000:.2f}'
+                   for z in tick_reals]
+
+    return tick_reals, tick_plots, tick_labels
+
 def plot_unit_cell(conf: object = None, save_fig=False, title=None):
     '''
     2D top-down view + 3D isometric view + 3D side view of the layer stack.
@@ -960,11 +1081,13 @@ def plot_unit_cell(conf: object = None, save_fig=False, title=None):
         z += layer.thickness
     z_total = z
 
-    fig = plt.figure(figsize=(10,5),dpi=100,layout='constrained')
+    fig = plt.figure(figsize=(10,5),dpi=100, layout='tight')
     # ax2d     = fig.add_subplot(131)
     ax3d     = fig.add_subplot(121, projection='3d')
     ax3dside = fig.add_subplot(122, projection='3d')
     ax3dside.set_proj_type('ortho')
+
+    transform, z_plot_total = _make_z_transform(layers, z_positions)
 
     # -- draw_box: solid rectangular box ──────────────────────────────────────
     def draw_box(ax, x0, y0, z0, dx, dy, dz, fc, ec, alpha, label=None):
@@ -1015,6 +1138,18 @@ def plot_unit_cell(conf: object = None, save_fig=False, title=None):
             ax.plot([0,a,a,0,0],[0,0,a,a,0],[z]*5, **ek)
             ax.plot([hx0,hx1,hx1,hx0,hx0],[hy0,hy0,hy1,hy1,hy0],[z]*5, **ek)
 
+    # -- If layers have drastically different thicknesses, may want to compress some in z:
+    def draw_box_t(ax, x0, y0, z0_real, dx, dy, dz_real, fc, ec, alpha, label=None):
+            """draw_box but with z coordinates transformed to plot space."""
+            z0p = transform(z0_real)
+            z1p = transform(z0_real + dz_real)
+            draw_box(ax, x0, y0, z0p, dx, dy, z1p - z0p, fc, ec, alpha, label)
+
+    def draw_hole_slab_t(ax, z0_real, dz_real, fc, ec, w, label=None):
+        z0p = transform(z0_real)
+        z1p = transform(z0_real + dz_real)
+        draw_hole_slab(ax, z0p, z1p - z0p, fc, ec, w, label)
+
     # -- Draw each layer in 3D ────────────────────────────────────────────────
     legend_drawn = set()
 
@@ -1030,34 +1165,41 @@ def plot_unit_cell(conf: object = None, save_fig=False, title=None):
 
         if layer.pattern is None:
             for ax in [ax3d, ax3dside]:
-                draw_box(ax, 0, 0, z0, a, a, h, fc, ec, al, label=lbl)
+                draw_box_t(ax, 0, 0, z0, a, a, h, fc, ec, al, label=lbl)
                 lbl = None
 
         elif layer.pattern == 'pillar':
             w = layer.ff * a
             air_fc, air_ec, air_al = _mat_color('Air')
             for ax in [ax3d, ax3dside]:
-                draw_box(ax, 0, 0, z0, a, a, h, air_fc, air_ec, air_al, label=None)
-                draw_box(ax, cx-w/2, cy-w/2, z0, w, w, h, fc, ec, 0.9, label=lbl)
+                draw_box_t(ax, 0, 0, z0, a, a, h, air_fc, air_ec, air_al, label=None)
+                draw_box_t(ax, cx-w/2, cy-w/2, z0, w, w, h, fc, ec, 0.9, label=lbl)
                 lbl = None
 
         elif layer.pattern == 'hole':
             w = layer.ff * a
             for ax in [ax3d, ax3dside]:
-                draw_hole_slab(ax, z0, h, fc, ec, w,label=lbl)
+                draw_hole_slab_t(ax, z0, h, fc, ec, w,label=lbl)
                 lbl = None
 
         elif layer.pattern == 'cuboids':
             w1, w2, x1, y1, x2, y2 = layer.get_cuboid_geometry(a)
             air_fc, air_ec, air_al = _mat_color('Air')
             for ax in [ax3d, ax3dside]:
-                draw_box(ax, 0, 0, z0, a, a, h, air_fc, air_ec, air_al, label=None)
-                draw_box(ax, x1-w1/2, y1-w1/2, z0, w1, w1, h, fc, ec, 0.9, label=lbl)
-                draw_box(ax, x2-w2/2, y2-w2/2, z0, w2, w2, h, fc, ec, 0.9, label=None)
+                draw_box_t(ax, 0, 0, z0, a, a, h, air_fc, air_ec, air_al, label=None)
+                draw_box_t(ax, x1-w1/2, y1-w1/2, z0, w1, w1, h, fc, ec, 0.9, label=lbl)
+                draw_box_t(ax, x2-w2/2, y2-w2/2, z0, w2, w2, h, fc, ec, 0.9, label=None)
                 lbl = None
 
     # -- 3D axis formatting ────────────────────────────────────────────────────
-    zticks = list(z_positions) + [z_total]
+
+    ztick_reals, ztick_plots, ztick_labels = _make_zticks_transformed(
+        layers, z_positions, transform)
+
+    max_label_len = max(len(s) for s in ztick_labels)
+    tick_pad      = max_label_len * 0
+    zlabel_pad    = tick_pad + 50
+
     for ax, view_angles, title_str in [
         (ax3d,     (20, -50), '3D view'),
         (ax3dside, (0,   90), 'Side view'),
@@ -1066,14 +1208,16 @@ def plot_unit_cell(conf: object = None, save_fig=False, title=None):
             case '3D view':
                 ax.set_xlim(0, a)
                 ax.set_ylim(0, a)
-                ax.set_zlim(0, z_total)
+                ax.set_zlim(0, z_plot_total)
                 ax.set_xlabel('x (nm)', fontsize=10)
                 ax.set_ylabel('y (nm)', fontsize=10)
-                ax.set_zlabel('z (nm)', fontsize=10)
-                ax.set_zticks(zticks)
-                ax.set_zticklabels([f'{z:.0f}' for z in zticks], fontsize=6)
+                ax.zaxis.set_rotate_label(False)
+                ax.set_zlabel(f'z$\downarrow$', fontsize=10, labelpad=-10)
+                # ax.set_zticks(ztick_plots)
+                ax.set_zticks([])
+                # ax.set_zticklabels(ztick_labels, fontsize=6)
                 ax.invert_zaxis()
-                ax.tick_params(labelsize=10)
+                # ax.tick_params(labelsize=10)
                 ax.set_title(title_str, fontsize=11,fontweight='bold',y=1.15)
                 ax.view_init(*view_angles)
                 leg=ax.legend(fontsize=10, loc='upper left',framealpha=1)
@@ -1083,20 +1227,21 @@ def plot_unit_cell(conf: object = None, save_fig=False, title=None):
             case 'Side view':
                 ax.set_xlim(0, a)
                 ax.set_ylim(0, a)
-                ax.set_zlim(0, z_total)
+                ax.set_zlim(0, z_plot_total)
                 ax.set_xlabel('x (nm)', fontsize=10,labelpad=0)
                 # ax.set_ylabel('y (nm)', fontsize=10)
                 ax.invert_xaxis()
                 ax.invert_zaxis()
                 ax.set_yticks([])
-                ax.set_zlabel('z (nm)', fontsize=10,labelpad=14)
-                ax.set_zticks(zticks)
-                ax.set_zticklabels([f'{z:.0f}' for z in zticks], fontsize=6)
-                ax.tick_params(labelsize=10)
+                ax.zaxis.set_rotate_label(False)
+                ax.set_zlabel('z (µm)\n$\downarrow$', fontsize=10,labelpad=zlabel_pad)
+                ax.set_zticks(ztick_plots)
+                ax.set_zticklabels(ztick_labels, fontsize=10, ha='right')
+                ax.tick_params(axis='z',pad=tick_pad)
+                # ax.tick_params(labelsize=10)
                 ax.set_title(title_str, fontsize=11,y=-0.05,fontweight='bold')
                 ax.view_init(*view_angles)
                 # ax.legend(fontsize=10, loc='upper left')
-                ax.tick_params(axis='z',pad=10)
                 ax.set_box_aspect((1.25,1,2))
                 # ax.xaxis._axinfo['juggled']=(0,1,1)
                 leg2 = ax.legend(handles,labels,loc=(0.7,0.2),framealpha=1)
@@ -1104,14 +1249,10 @@ def plot_unit_cell(conf: object = None, save_fig=False, title=None):
 
     # -- Figure title ──────────────────────────────────────────────────────────
     if title is None:
-        layer_summary = ' | '.join(
-            f"{L.material} {L.thickness:.0f}nm" +
-            (f" ({L.pattern})" if L.pattern else '')
-            for L in layers
-        )
-        title = f'{layer_summary}'
-    fig.suptitle(title, fontsize=10)
-    # fig.legend(fontsize=10)
+        title = _make_unit_cell_title(layers, a)
+    fig.suptitle(title, fontsize=10, ha='center',va='bottom',wrap=True)
+    # fig.subplots_adjust(bottom=0.15)
+    fig.tight_layout()
 
     if save_fig:
         if not conf:
