@@ -28,52 +28,31 @@ warnings.filterwarnings('ignore')
 
 # region Filename generation, tensor rotation helpers, material class definitions, layer class definitions
 
-# ── Automatic filename generation ──────────────────────────────────────────────
-# All run_study* functions call make_study_fname() instead of building names inline.
-
-# def make_save_prompt(tempfile=None):
-#     if not tempfile:
-#         print("No file passed to save prompt.")
-#         return
-#     else:
-#         root = tk.Tk()
-#         root.withdraw()
-#         file_path = filedialog.asksaveasfilename(defaultextension=".txt",
-#                                                 filetypes=[("text files","*.txt"),
-#                                                             ("All files", "*.*")])
-#         if file_path:
-#             with open(file_path,"w") as f:
-#                 f.write(tempfile)
-#         return(f'Saved {tempfile} to {file_path}')
-
-# def _slugify(s: str) -> str:
-#     """Make a string filesystem-safe: lowercase, spaces/special chars -> underscore."""
-#     s = str(s).replace(' ', '_').replace('/', '_').replace('\\', '_')
-#     s = _re.sub(r'[^\w.\-]', '', s)
-#     return s.strip('_')
-
-def make_stack_slug(layers, a):
+# Need to save layer stack in some file names, but some characters are problematic. 
+# This builds a short, filesystem-safe slug that fully identifies the layer stack.
+def make_stack_slug(conf: object) -> str:     
     """
-    Build a short, filesystem-safe slug that fully identifies the layer stack.
-
-    Format:
-        P<period>_<mat><thickness>[_<pattern>_<params>]_...
-
-    Skips pure Air padding layers (first and last layer if they are Air and unpatterned),
-    since these are always 500 nm bookends that add no scientific information.
+    Skips pure Air padding layers (first and last layer if they are Air and unpatterned).
+    As long as your padding is sufficient to let evanescent/near-field effects decay, they don't make any difference.
     All numbers rounded to 1 decimal place and stripped of trailing zeros.
-
     Examples:
         P500_SiO2-50_hole-ff0.5_CrSBr-70_hole-ff0.5
         P535_ReS2-70_cuboids-w0250-a0.6
         P550_TiO2-62.5_SiO2-94.8 (DBR pair)
     """
+    layers = conf.layers
+    a      = conf.lattice_const
+
+    # We want any numbers to be rounded to 1 decimal with no trailingi zeros
     def fmt(x):
-        s = f'{float(x):.1f}'.rstrip('0').rstrip('.')
+        s = f'{float(x):.1f}'.rstrip('0').rstrip('.')   
         return s
 
-    parts = [f'A{fmt(a)}nm']
-    for i, L in enumerate(layers):
+    # Start with the lattice constant
+    parts = [f'A{fmt(a)}nm']    
+
+    # Go through layer by layer and append the relevant information
+    for i, L in enumerate(layers):     
         mat = L.material if isinstance(L.material, str) else L.get_material().name
         # Skip unlabelled Air padding at top and bottom
         is_first = (i == 0)
@@ -98,6 +77,8 @@ def make_stack_slug(layers, a):
         parts.append(seg)
     return '_'.join(parts)
 
+# We don't want to bother writing out a full filename every time we run a study.
+# Instead, we construct automatically from the study config.
 def make_study_fname(study: int, conf: object) -> str:
     """
     Generate a descriptive, collision-resistant filename for simulation output.
@@ -105,19 +86,12 @@ def make_study_fname(study: int, conf: object) -> str:
     Parameters
     ----------
     study      : int — 0, 1, 2, or 3
-    layers     : list of Layer
-    a          : float, lattice constant in nm
-    ext        : 'csv' or 'pdf'
-    global_rot : include if relevant (Study 1/2/3)
-    azim_deg   : include if relevant (Study 3)
-    lam_range  : (lam_start, lam_stop) tuple — included for Study 0 and Study 3
-    n_basis    : include if non-default
-    extra      : any additional string tag
-    output_dir: Path — defaults to global OUTPUT_DIR
+    conf       : object - RCWAConfig used to run the study
 
     Returns
     -------
-    Path object. The parent directory is created if it doesn't exist.
+    Study filename with path prepended. The parent directory is created if it doesn't exist.
+    If there is a clashing file in the save directory, the new one is saved as filename_v2, _v3, etc.
 
     Examples
     --------
@@ -131,26 +105,17 @@ def make_study_fname(study: int, conf: object) -> str:
     a = conf.lattice_const
     n_basis = conf.n_basis
 
-
     slug   = make_stack_slug(layers, a)
     parts  = [f'study{study}', slug]
 
-    match conf.global_rot:
-        case None | 0.0:
-            parts.append(f'rot{int(round(0.0)):02d}')
-        case _:
-            parts.append(f'rot{int(round(conf.global_rot)):02d}')
+    # We only want to specify global tensor index rotation/tilt if non-zero value specified in config:
+    if conf.global_rot: parts.append(f'rot{int(round(conf.global_rot)):02d}') 
+    if conf.global_tilt: parts.append(f'rot{int(round(conf.global_tilt)):02d}') 
 
-    # if azim_deg is not None:
-    #     parts.append(f'azim{int(round(azim_deg)):03d}')
-    # if lam_range is not None:
-    #     parts.append(f'lam{int(lam_range[0])}-{int(lam_range[1])}')
-    if n_basis is not None:
-        parts.append(f'nb{n_basis}')
-    # if extra:
-    #     parts.append(_slugify(extra))
+    parts.append(f'nb{n_basis}')
 
     fname = '_'.join(parts)
+
     out   = Path(output_dir) / fname
 
     # Collision guard: if exact name exists, append _v2, _v3, ...
@@ -165,7 +130,11 @@ def make_study_fname(study: int, conf: object) -> str:
             v += 1
     return fname
 
-def save_study(df, conf: object, fname_stem):
+# Once we have our dataframe from a study, we want to save it
+# alongside a .json of the same name containing all the config information to be used
+# (a) when plotting or (b) to rebuild a study config at a later date.
+# Returns path_to_csv, path_to_json.
+def save_study(df, conf: object, fname_stem: str):
     '''Save study DataFrame as CSV and conf as JSON, both named fname_stem -->
     the plain string from make_study_fname (no extension or directory).
     Returns (csv_path, json_path).'''
@@ -178,15 +147,20 @@ def save_study(df, conf: object, fname_stem):
 
 # —— Tensor rotation helpers —————————————————————————————————————————————————
 
-def rotation_matrix_z(phiz_deg: float) -> np.ndarray:
+# If we want to rotate our tensor index in-plane, i.e.
+# counter-clockwise about the z-axis. 0° means n_aa still points along x-axis;
+# 90° means n_aa now points along y-axis, etc.
+def rotation_matrix_z(rot_deg: float) -> np.ndarray:
     '''Rotation about z-axis by phiz_deg.'''
-    c, s = np.cos(np.radians(phiz_deg)), np.sin(np.radians(phiz_deg))
+    c, s = np.cos(np.radians(rot_deg)), np.sin(np.radians(rot_deg))
     return np.array([[c,-s,0],[s,c,0],[0,0,1]])
 
-def rotation_matrix_tilt(tilt_deg: float) -> np.ndarray:
+# If we want to tilt the optical axis out of the xy plane, e.g. to
+# mimic a birefringent liquid crystal with applied voltage.
+def rotation_matrix_tilt(tilt_deg: float) -> np.ndarray:        # NOTE: Still need to verify this is the correct rotation
     '''
     Tilts the optical axis out of the x-y plane.
-    theta_tilt_deg: polar tilt from z-axis towards the x-y plane.
+    tilt_deg: polar tilt from z-axis towards the x-y plane.
                     0° = axis along z (no tilt), 90° = fully in-plane.
 
     Physically, the optical axis director n̂ points in direction n̂ = (sin θ cos φ, sin θ sin φ, cos θ),
@@ -212,13 +186,15 @@ def rotation_matrix_tilt(tilt_deg: float) -> np.ndarray:
     K = np.array([[0,-axis[2],axis[1]],[axis[2],0,-axis[0]],[-axis[1],axis[0],0]])
     return np.eye(3) + np.sin(angle)*K + (1-np.cos(angle))*(K@K)
 
+# Given in-plane rotation and out-of-plane tilt angle, we can now
+# transform our permittivity tensor:        # NOTE: Still need to verify this is correct representation
 def rotate_epsilon_tensor(ea, eb, ec,
-                          rot: float = 0.0,
-                          tilt: float = 0.0
+                          rot_deg: float = 0.0,
+                          tilt_deg: float = 0.0
                           ) -> tuple:
-    ''' readme:
+    '''
     Builds a diagonal permittivity tensor (ea, eb, ec) using the full 3D rotation
-    defined by phiz, theta_tilt, phi_az.
+    defined by rot, tilt
 
     Convention:
     rot:           in-plane rotation of the b-axis about z
@@ -234,7 +210,7 @@ def rotate_epsilon_tensor(ea, eb, ec,
     # Build diagonal epsilon matrix:
     eps_diag = np.diag([ea, eb, ec]).astype(complex)
     # Full rotation matrix:
-    R = rotation_matrix_tilt(tilt) @ rotation_matrix_z(rot)
+    R = rotation_matrix_tilt(tilt_deg) @ rotation_matrix_z(rot_deg)
     # Rotate: eps_lab = R @ eps_crystal @ R.T
     eps_rot = R @ eps_diag @ R.T
     # Return as nested tuple for S4
@@ -242,6 +218,7 @@ def rotate_epsilon_tensor(ea, eb, ec,
 
 # —— Base class ———————————————————————————————————————————————————————————————
 
+# Empty class for generic material:
 class Material(ABC):
     '''
     Abstract base class for all materials. Each subclass implements:
@@ -260,28 +237,35 @@ class Material(ABC):
         return f"{self.__class__.__name__}({self.name})"
 
 # —— Isotropic, non-dispersive materials ——————————————————————————————————————
+# A simple material with the same index of refraction in all directions.
+# Can initialize with n = float or eps = float. Prioritizes epsilon.
 class IsotropicMaterial(Material):
     '''
     Isotropic, non-dispersive material. Rotation angles have no effect.
     '''
     def __init__(self, name: str, n: float = None, eps: float = None):
         self.name = name
-        if eps is not None:
+        if not (eps or n): raise ValueError("Provide either n: float = index or eps: float = permittivity.")
+        if eps:
             self._eps = complex(eps)
-        elif n is not None:
+            self._n   = complex(eps**(1/2))
+        elif n:
             self._eps = complex(n**2)
-            self.n = n
-        else:
-            raise ValueError("Provide either n or eps.")
+            self._n = complex(n)
+
+    # Other kwargs included for consistency/clarity,
+    # but will obviously have no effect on a fully isotropic material.
+    # Returns epsilon tensor to pass to S4.
     def epsilon(self, lam_nm: float,
                 rot: float = 0.0,
-                tilt: float = 0.0,
-                # phi_az_deg: float = 0.0
+                tilt: float = 0.0
                 ) -> tuple:
         e = self._eps
         return ((e,0,0),(0,e,0),(0,0,e))
     
 # —— Anisotropic, non-dispersive materials ——————————————————————————————————————
+# Directly supply index along each principal axis as a float.
+# Also takes complex epsilon_ii.
 class AnisotropicMaterial(Material):
     '''
     Anisotropic, non-dispersive material. Directly supply each index.
@@ -328,8 +312,7 @@ class AnisotropicMaterial(Material):
 
     def epsilon(self, lam_nm: float,
                 rot: float = 0.0,
-                tilt: float = 0.0,
-                # phi_az_deg: float = 0.0 
+                tilt: float = 0.0
                 ) -> tuple:
         return rotate_epsilon_tensor(self._eps_xx, self._eps_yy, self._eps_zz,
                                      rot, tilt)
@@ -352,12 +335,14 @@ class BirefringentMaterial(Material):
     def epsilon(self, lam_nm: float,
                 rot: float = 0.0,
                 tilt: float = 0.0,
-                # phi_az_deg: float = 0.0) 
                 )-> tuple:
         return rotate_epsilon_tensor(self._eps_xx, self._eps_yy, self._eps_zz,
                                      rot, tilt)
 
 # —— Uniaxial, non-dispersive materials ———————————————————————————————————————
+# One extraordinary axis, two ordinary.
+# All polarizations traveling along the extraordinary axis will not experience birefringence.
+# E.g. liquid crystal.
 class UniaxialMaterial(Material):
     '''
     Non-dispersive uniaxial material,
