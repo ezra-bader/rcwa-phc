@@ -571,39 +571,36 @@ def load_material_library():
     return RU_MATERIALS
 
 # Simple function to build DBR stack (DBR, air, DBR)
-def make_DBR_cav(n_pairs: int = 2,
-                 high_index_mat: str = 'TiO2',
-                 low_index_mat:  str = 'SiO2',
-                 centerlam_nm:   float = 550,
-                 cavity_mat:     str = 'Air',
-                 cavity_len:     float = None):
+def DBR(n_pairs: int,
+        high_index_mat: str = 'TiO2',
+        low_index_mat:  str = 'SiO2',
+        centerlam_nm:   float = 550,
+        reversed: bool = False) -> list:
     """
-    Build a symmetric DBR cavity stack:
-        Air | (H L)^n_pairs | cavity | (H L)^n_pairs | Air
+    Returns a list of quarter-wave Layer pairs for one DBR mirror.
 
-    Quarter-wave thicknesses are computed from the material refractive index.
-    cavity_len defaults to half-wave (lambda/2) which gives a resonance at centerlam_nm.
+    reversed=False (default): starts H, ends L  --> use for bottom mirror
+    reversed=True:            starts L, ends H  --> use for top mirror
+
+    Use with * unpacking:
+        MY_LAYERS = [
+            ru.Layer('Air', 500),
+            *ru.DBR(6, centerlam_nm=550, reversed=True),   # top: L...H | cavity
+            ru.Layer('LC', 3450, layer_tilt=51.15),
+            *ru.DBR(6, centerlam_nm=550),                  # bottom: H...L
+            ru.Layer('Air', 500),
+        ]
     """
     def _n(mat_name):
-        m = RU_MATERIALS[mat_name]
-        return float(np.sqrt(m._eps).real)
-
-    if cavity_len is None:
-        cavity_len = centerlam_nm / (2 * _n(cavity_mat)) if cavity_mat != 'Air' else centerlam_nm / 2
+        return float(np.sqrt(RU_MATERIALS[mat_name]._eps).real)
 
     d_H = centerlam_nm / (4 * _n(high_index_mat))
     d_L = centerlam_nm / (4 * _n(low_index_mat))
 
-    stack = [Layer('Air', 500, pattern=None)]
-    for _ in range(n_pairs):
-        stack.append(Layer(high_index_mat, d_H, pattern=None))
-        stack.append(Layer(low_index_mat,  d_L, pattern=None))
-    stack.append(Layer(cavity_mat, cavity_len, pattern=None))
-    for _ in range(n_pairs):
-        stack.append(Layer(high_index_mat, d_H, pattern=None))
-        stack.append(Layer(low_index_mat,  d_L, pattern=None))
-    stack.append(Layer('Air', 500, pattern=None))
-    return stack
+    pair = [Layer(low_index_mat, d_L), Layer(high_index_mat, d_H)] if reversed \
+      else [Layer(high_index_mat, d_H), Layer(low_index_mat,  d_L)]
+
+    return pair * n_pairs
 
 
 def check_layers(layers: list = None):
