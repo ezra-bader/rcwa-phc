@@ -652,8 +652,6 @@ class RCWAConfig:
     # Global index rotations
     global_rot: float = None      # spins tensor index around z axis
     global_tilt: float = None  # rotates tensor index out of xy plane towards zhat
-    # global_az: float = None     # azimuthal rotation of tilted index tensor, probably redundant
-    #                             # but leaving in for completeness
 
     # Lattice constant
     lattice_const: float = None
@@ -743,7 +741,7 @@ class RCWAConfig:
         print(f"Config saved as {out.name}")
 
     @classmethod
-    def load(cls, json_path):
+    def load(cls, json_path) -> object:
         '''Reconstructs the config object from a JSON file.'''
         path = Path(json_path)
         if path.suffix != '.json':
@@ -1083,8 +1081,6 @@ def plot_unit_cell(conf: object = None, layers=None, a: float=None, save_fig=Fal
             print(f"Saved {fname}")
     return fig
  
-
-
  # -- Core S4 functions
 
 def _resolve_rotation(layer, conf):
@@ -1158,13 +1154,13 @@ def build_simulation(conf: object,
             case None:
                 match conf.global_tilt:
                     case 0.0 | None:
-                        eff_theta_tilt = 0.0
+                        eff_tilt = 0.0
                     case _:
-                        eff_theta_tilt = conf.global_tilt
+                        eff_tilt = conf.global_tilt
             case _:
-                eff_theta_tilt = layer.layer_tilt
+                eff_tilt = layer.layer_tilt
 
-        key = (mat.name, eff_rot, eff_theta_tilt)
+        key = (mat.name, eff_rot, eff_tilt)
 
         if key not in s4_name_map:
             # Generate a unique S4 material name
@@ -1174,7 +1170,7 @@ def build_simulation(conf: object,
             # Compute epsilon at this wavelength and orientation
             eps = mat.epsilon(lam_nm,
                               rot       = eff_rot,
-                              tilt = eff_theta_tilt
+                              tilt      = eff_tilt
                             )
             S.SetMaterial(Name=s4_name, Epsilon=eps)
 
@@ -1475,9 +1471,9 @@ def verify_energy_conservation(conf: object, lam_nm=None, elev_deg=10.0,
     print(f"|  Incident medium: {first_layer}  |  Substrate: {last_layer}")
 
     # ── Jones matrix (fresh simulation) ───────────────────────────────────────
-    S = build_simulation(conf=conf, lam_nm=lam_nm)
+    S = build_simulation(conf, lam_nm)
     S.SetFrequency(1.0 / lam_nm)
-    T, _ = get_jones_matrices(S, elev_deg, azim_deg, conf=conf)
+    T, _ = get_jones_matrices(S, elev_deg, azim_deg, conf)
 
     print(f"Jones T matrix:")
     print(f"|           s-in           p-in")
@@ -1495,7 +1491,7 @@ def verify_energy_conservation(conf: object, lam_nm=None, elev_deg=10.0,
           f"{'R_pf':>10}  {'A':>10}  {'T+R+A':>10}")
     print('-'*68)
     for j, (sa, pa, label) in enumerate([(1,0,'s-in'), (0,1,'p-in')]):
-        S2 = build_simulation(conf=conf, lam_nm=lam_nm)
+        S2 = build_simulation(conf, lam_nm)
         S2.SetFrequency(1.0 / lam_nm)
         S2.SetExcitationPlanewave(IncidenceAngles=(elev_deg, azim_deg),
                                    sAmplitude=sa, pAmplitude=pa, Order=0)
@@ -1510,12 +1506,11 @@ def verify_energy_conservation(conf: object, lam_nm=None, elev_deg=10.0,
 
         print(f"{label:>6}  {Tjones:>10.5f}  {Tpow:>10.5f}  "
               f"{Rpow:>10.5f}  {Apow:>10.5f}  {Tpow+Rpow+Apow:>10.6f}")
-    # print(f'%'*90)
 
 
 # -------- STUDY DEFINITIONS --------------------
 # —— Study/config loader
-def load_study(path):
+def load_study(path) -> tuple[pd.DataFrame, object]:
     '''
     Load a matched CSV + JSON pair by base path (with or without extension).
     Returns (df, conf) — either may be None if the file wasn't found.
@@ -1551,7 +1546,7 @@ def load_study(path):
 
 # ── Stack metadata helpers ────────────────────────────────────────────────────
 
-def stack_label(layers, a):
+def stack_label(layers: list, a: float) -> str:
     """
     Build a concise one-line label summarising the layer stack and period.
     Example: 'P=500 nm | Air 500 | CrSBr 70 (hole ff=0.5) | SiO2 100 | Air 500'
@@ -1567,14 +1562,14 @@ def stack_label(layers, a):
         parts.append(f'{mat} {L.thickness:.0f}nm{pat}')
     return f'P={a:.0f} nm  |  ' + '  |  '.join(parts)
 
-def stack_title(layers, a, extras=''):
+def stack_title(layers: list, a: float, extras: str = '') -> str:
     """Multi-line figure title with stack summary and optional extra info."""
     lines = [stack_label(layers, a)]
     if extras:
         lines.append(extras)
     return '\n'.join(lines)
 
-def _get_patterned_layer_info(layers):
+def _get_patterned_layer_info(layers: list) -> str:
     """Return a short string describing patterned layers for plot subtitles."""
     infos = []
     for L in layers:
@@ -1617,7 +1612,7 @@ class ProgressCallback:
 # —— Study 0 plot ——————————————————————————————————————————————————————————————
 
 def plot_study0(df, conf: object, layers=None, a=None,
-                quantities=None, save_fig=False):
+                quantities=None, save_fig=False) -> plt.fig:
     """
     Plot R, T, A spectra from Study 0.
 
@@ -1668,7 +1663,7 @@ def plot_study0(df, conf: object, layers=None, a=None,
 def plot_study1(df, conf: object, layers: list = None, a: float = None, rot_deg: float = None,
                 azim_vals=None, x_col='elev',
                 elev_range=None, S1max=1.0, S3max=1.0, CDmax=1.0,
-                save_fig=False):
+                save_fig=False) -> plt.fig:
     """
     E vs k dispersion plots.
 
@@ -1761,7 +1756,7 @@ def plot_study1(df, conf: object, layers: list = None, a: float = None, rot_deg:
 
 def plot_kxky_grid(df, conf,
                    save_fig=False,
-                   quantities = None):
+                   quantities = None) -> plt.fig:
     """
     Grid of kx-ky maps at selected energies.
     Uses griddata interpolation onto uniform grid with disk mask.
@@ -1841,7 +1836,7 @@ def plot_kxky_grid(df, conf,
     return fig
 
 def plot_polarization_kxky(df, conf: object, energy_eV, layers=None, a=None,
-                            rot_deg=0.0, save_fig=False):
+                            rot_deg=0.0, save_fig=False) -> plt.fig:
     """
     kx-ky maps of polarization orientation angle psi and ellipticity chi.
     C-points (BIC-derived vortices) appear as phase singularities in psi
@@ -2182,7 +2177,7 @@ def plot_mode_scan(conf: object, lam_real, t_ss_vals, layers=None, a=None,
 
 def plot_study3(conf: object, lam_real, elev_vals, pole_map, layers=None, a=None,
                 azim_deg=0.0, eps_imag=None, log_scale=True,
-                save_fig=False):
+                save_fig: bool = False):
     """
     2D dispersion map of S-matrix poles: energy vs angle.
     Bright bands are photonic modes.
@@ -2245,7 +2240,7 @@ def plot_study3(conf: object, lam_real, elev_vals, pole_map, layers=None, a=None
 # —— Study 0: Wavelength-resolved reflection
 
 def run_study0(conf: object,
-               save_fig=False):
+               save_fig: bool = False):
     """Study 0: normal-incidence R/T/A wavelength sweep."""
     layers = conf.layers
     wavelengths = conf.wavelengths
@@ -2286,7 +2281,7 @@ def run_study0(conf: object,
 
 # —— Study 1: E vs. k
 
-def _worker_study1(conf: object, elev_deg, azim_deg):
+def _worker_study1(conf: object, elev_deg: float, azim_deg: float):
     """
     One (elev, azim, rot) across all wavelengths.
     layers is passed explicitly so joblib can pickle it for subprocess delivery.
@@ -2316,7 +2311,7 @@ def _worker_study1(conf: object, elev_deg, azim_deg):
         rows.append(row)
     return rows
 
-def run_study1(conf: object, print_every=None):
+def run_study1(conf: object, print_every: int = None):
 
     layers = conf.layers
     azim_vals = conf.study1.azim_vals
@@ -2366,7 +2361,7 @@ def quick_test_study1(conf: object):
 
 # —— Study 2: kx vs. ky
 
-def _worker_study2(conf: object, azim_deg, elev_deg):
+def _worker_study2(conf: object, azim_deg: float, elev_deg: float):
     """
     One (azim, elev, phiz) across all wavelengths.
     """
@@ -2394,7 +2389,7 @@ def _worker_study2(conf: object, azim_deg, elev_deg):
         rows.append(row)
     return rows
 
-def run_study2(conf: object, print_every=None):
+def run_study2(conf: object, print_every: int = None):
     
     layers = conf.layers
     pairs = conf.study2.pairs
