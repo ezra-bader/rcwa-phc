@@ -31,56 +31,68 @@ warnings.filterwarnings('ignore')
 
 # Need to save layer stack in some file names, but some characters are problematic. 
 # This builds a short, filesystem-safe slug that fully identifies the layer stack.
-def make_stack_slug(conf: object) -> str:     
-    """
-    Skips pure Air padding layers (first and last layer if they are Air and unpatterned).
-    As long as your padding is sufficient to let evanescent/near-field effects decay, they don't make any difference.
-    All numbers rounded to 1 decimal place and stripped of trailing zeros.
-    Examples:
-        P500_SiO2-50_hole-ff0.5_CrSBr-70_hole-ff0.5
-        P535_ReS2-70_cuboids-w0250-a0.6
-        P550_TiO2-62.5_SiO2-94.8 (DBR pair)
-    """
+def make_stack_slug(conf: object) -> str:
     layers = conf.layers
     a      = conf.lattice_const
 
-    # We want any numbers to be rounded to 1 decimal with no trailingi zeros
     def fmt(x):
-        s = f'{float(x):.1f}'.rstrip('0').rstrip('.')   
-        return s
+        # Auto-scale: use µm if >= 1000nm to keep filenames short
+        if x >= 1000:
+            s = f'{x/1000:.2f}'.rstrip('0').rstrip('.')
+            return s + 'um'
+        s = f'{float(x):.1f}'.rstrip('0').rstrip('.')
+        return s + 'nm'
 
-    # Start with the lattice constant
-    parts = [f'A{fmt(a)}nm']    
-
-    # Go through layer by layer and append the relevant information
-    for i, L in enumerate(layers):     
+    # Build entry list, skipping Air padding
+    entries = []
+    for i, L in enumerate(layers):
         mat = L.material if isinstance(L.material, str) else L.get_material().name
-        # Skip unlabelled Air padding at top and bottom
         is_first = (i == 0)
         is_last  = (i == len(layers) - 1)
         if mat == 'Air' and L.pattern is None and (is_first or is_last):
             continue
-        seg = f'{mat}-{fmt(L.thickness)}nm'
-        if L.pattern in ('hole', 'pillar'):
-            seg += f'-{L.pattern}-ff{fmt(L.ff)}'
-        elif L.pattern == 'cuboids':
-            seg += f'-cub-w0{fmt(L.w0)}-a{fmt(L.alpha)}'
-        match L.layer_rot:
-            case None | 0.0:
-                pass
-            case _:
-                seg += f'_rot{fmt(L.layer_rot)}'
-        match L.layer_tilt:
-            case None | 0.0:
-                pass
-            case _:
-                seg += f'_tilt{fmt(L.layer_tilt)}'
-        match L.layer_tilt_azim:
-            case None | 0.0:
-                pass
-            case _:
-                seg += f'_tiltazim{fmt(L.layer_tilt_azim)}'
+        entries.append((mat, L.thickness, L.pattern, L.ff,
+                         L.layer_rot, L.layer_tilt, L.layer_tilt_azim, L))
+
+    # Collapse repeating 2-layer DBR pairs
+    parts = [f'A{fmt(a)}']
+    i = 0
+    while i < len(entries):
+        mat, thick, pat, ff, rot, tilt, tilt_azim, layer_obj = entries[i]
+
+        # Try to match a repeating 2-layer unit
+        if i + 1 < len(entries):
+            unit = (entries[i][0], entries[i+1][0])
+            count = 1
+            j = i + 2
+            while (j + 1 < len(entries) and
+                   entries[j][0]   == unit[0] and
+                   entries[j+1][0] == unit[1] and
+                   entries[j][1]   == entries[i][1] and    # same thickness
+                   entries[j+1][1] == entries[i+1][1]):
+                count += 1
+                j += 2
+            if count >= 2:
+                m1, t1 = entries[i][0],   entries[i][1]
+                m2, t2 = entries[i+1][0], entries[i+1][1]
+                parts.append(f'({m1}{fmt(t1)}-{m2}{fmt(t2)})x{count}')
+                i = j
+                continue
+
+        # Single layer
+        seg = f'{mat}-{fmt(thick)}'
+        if pat in ('hole', 'pillar'):
+            seg += f'-{pat}-ff{fmt(ff)}'
+        elif pat == 'cuboids':
+            seg += f'-cub-w0{fmt(layer_obj.w0)}-a{fmt(layer_obj.alpha)}'
+        if rot:
+            seg += f'_rot{int(round(rot)):02d}'
+        if tilt:
+            azim = int(round(tilt_azim or 0))
+            seg += f'_tilt{int(round(tilt)):02d}_tiltazim{azim:02d}'
         parts.append(seg)
+        i += 1
+
     return '_'.join(parts)
 
 # We don't want to bother writing out a full filename every time we run a study.
@@ -559,7 +571,7 @@ RU_MATERIALS = {
                                             'moocl2_nm_nxx_kxx_nyy_kyy_nzz_kzz.csv',
                                             delimiter=',', reverse=True),
         'ReS2': BirefringentMaterial('ReS2', eps0=18.0, delta_eps=1.7, eps_zz=7.25),
-        'LC': UniaxialMaterial('LC',n_o=1.50,n_e=1.91, optical_axis='z')
+        'LC': UniaxialMaterial('LC',n_o=1.50,n_e=1.91, optical_axis='x')
         #To be added: liquid crystal with tilt
         #'LC': UniaxialMaterial('LC', n_o=1.50, n_e=1.70)
         #To be added: DBR layer components
@@ -604,10 +616,12 @@ def DBR(n_pairs: int,
     return pair * n_pairs
 
 
-def check_layers(layers: list = None):
-    if not layers:
+def check_layers(layers: list = None, conf: object = None):
+    if not (layers or conf):
         print(f"Please indicate layer stack to check.\nExample: check_layers(layers=LAYERS)")
         return
+    if conf:
+        layers = conf.layers
 
     # Column widths
     CW = {'i': 8, 'mat': 12, 'thick': 22, 'pat': 24, 'rot': 12, 'tilt': 18}
@@ -636,12 +650,27 @@ def check_layers(layers: list = None):
                 pat = f'cuboids, w0={L.w0}, a={L.alpha}'
 
         # Format rot
-        rot = 'None' if L.layer_rot is None else f'{L.layer_rot:.1f}'
+        match L.layer_rot:
+            case 0.0:
+                rot = 0
+            case None:
+                if conf:
+                    rot = f'{conf.global_rot:.1f}' if conf.global_rot else 0
+                else: rot = 0
+            case _:
+                rot = f'{L.layer_rot:.1f}'
 
         # Format tilt
         match L.layer_tilt:
-            case None | 0.0:
-                tilt = '0'
+            case 0.0:
+                tilt = 0
+            case None:
+                if conf:
+                    azim = conf.global_tilt_azim if conf.global_tilt_azim else 0
+                    tilt = f'{conf.global_tilt:.1f} @ azim {azim:.0f}°'
+                else:
+                    azim = 0#L.layer_tilt_azim if L.layer_tilt_azim else 0
+                    tilt = 0#f'{L.layer_tilt:.1f} @ azim {azim:.0f}°'
             case _:
                 azim = L.layer_tilt_azim if L.layer_tilt_azim else 0
                 tilt = f'{L.layer_tilt:.1f} @ azim {azim:.0f}°'
@@ -765,7 +794,7 @@ class RCWAConfig:
                 return savepath
     
     def verify_config(self):
-        check_layers(self.layers)
+        check_layers(layers = None, conf = self)
         print(f"\nWavelengths: {self.wavelengths[0]:.0f}–{self.wavelengths[-1]:.0f} nm ({len(self.wavelengths)} pts)")
         print(f"Study 1: {len(self.study1.elev_vals)} elev × {len(self.study1.azim_vals)} azim = {len(self.study1.elev_vals)*len(self.study1.azim_vals)} pairs")
         print(f"Study 2: {len(self.study2.pairs)} (azim, elev) pairs")
@@ -961,12 +990,15 @@ def _make_unit_cell_title(layers: list, a: float) -> str:
             if count >= 2:  # only collapse if it actually repeats
                 m1, t1, p1, _ = unit[0]
                 m2, t2, p2, _ = unit[1]
-                collapsed.append(f'({m1}/{m2})×{count}')
+                collapsed.append(f'({m1} {t1:.0f}nm/{m2} {t2:.0f}nm)×{count}')
                 i = j
                 continue
         # Not a repeating pair — format single layer normally
         mat, thick, pat, ff = entries[i]
-        seg = f'{mat} {thick:.0f}nm'
+        if thick >= 1000:
+            seg = f'{mat} {thick/1000:.2f}µm'
+        else:
+            seg = f'{mat} {thick:.0f}nm'
         if pat in ('hole', 'pillar'):
             seg += f' ({pat} ff={ff})'
         elif pat == 'cuboids':
@@ -1198,7 +1230,7 @@ def plot_unit_cell(conf: object = None, save_fig=False, title=None):
 
     max_label_len = max(len(s) for s in ztick_labels)
     tick_pad      = max_label_len * 0
-    zlabel_pad    = tick_pad + 50
+    zlabel_pad    = tick_pad + 35
 
     for ax, view_angles, title_str in [
         (ax3d,     (20, -50), '3D view'),
@@ -1212,7 +1244,7 @@ def plot_unit_cell(conf: object = None, save_fig=False, title=None):
                 ax.set_xlabel('x (nm)', fontsize=10)
                 ax.set_ylabel('y (nm)', fontsize=10)
                 ax.zaxis.set_rotate_label(False)
-                ax.set_zlabel(f'z$\downarrow$', fontsize=10, labelpad=-10)
+                ax.set_zlabel(f'z\n$\downarrow$', fontsize=10, labelpad=-10)
                 # ax.set_zticks(ztick_plots)
                 ax.set_zticks([])
                 # ax.set_zticklabels(ztick_labels, fontsize=6)
@@ -1485,11 +1517,15 @@ def get_jones_matrices(S_sim, elev_deg, azim_deg, conf: object):
 
     layers = conf.layers
     n_grid = conf.n_grid
+
+    s4phi = 90 - elev_deg   # Unfortuantely, S4 has its own angle convention
+    s4theta = azim_deg      
+
     """
     Compute Jones T and R matrices by field sampling.
     z coordinates computed from layers list rather than hardcoded globals.
     """
-    s_hat, p_hat = sp_basis(elev_deg, azim_deg)
+    s_hat, p_hat = sp_basis(s4phi, s4theta)
     z_trans, z_refl = get_z_sample(layers=layers)
 
     T = np.zeros((2, 2), dtype=complex)
@@ -1666,7 +1702,7 @@ def verify_energy_conservation(conf: object, lam_nm=None, elev_deg=10.0,
     print(f"Energy conservation check:")
     print(f"|  λ={lam_nm:.0f} nm  elev={elev_deg:.1f}°  "
           f"azim={azim_deg:.0f}°  rot={rot:.0f}°    tilt={tilt:.0f}°")
-    print(f"|  Stack: {' | '.join(L.material if isinstance(L.material,str) else L.get_material().name for L in layers)}")
+    print(f"|  Stack: {' | '.join(repr(L) if isinstance(L.material,str) else L.get_material().name for L in layers)}")
     print(f"|  Incident medium: {first_layer}  |  Substrate: {last_layer}")
 
     # ── Jones matrix (fresh simulation) ───────────────────────────────────────
@@ -1916,8 +1952,9 @@ def plot_study1(df, conf: object, rot_deg: float = None, tilt_deg: float = None,
     rot_tag = f"{rot_deg:.0f}°" if rot_deg is not None else f"0°"
     tilt_tag = f"{tilt_deg:.0f} @ azim = {azim_tag}" if tilt_deg is not None else f"0°"
 
-    title = stack_title(layers, a,
-                        extras=f'rot = {rot_tag}, tilt = {tilt_tag}')
+    # title = stack_title(layers, a,
+                        # extras=f'rot = {rot_tag}, tilt = {tilt_tag}')
+    title = f'{_make_unit_cell_title(layers, conf.lattice_const)}\nrot = {rot_tag}, tilt = {tilt_tag}'
     fig.suptitle(title, fontsize=14)
 
     for i, az in enumerate(azim_vals):
