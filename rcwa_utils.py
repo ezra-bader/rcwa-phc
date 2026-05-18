@@ -1487,7 +1487,9 @@ def update_simulation_materials(S,
 
 # ── Stack geometry helpers, Jones matrix sampling ──────────────────────────────────
 
-def sp_basis(elev_deg, azim_deg):
+def sp_basis(elev_deg, azim_deg):   # NOTE: not using this anymore, S4 has native polarization basis
+    # Convert elev_deg into what S4 documentation specifies
+    # s4phi = 90-elev_deg; s4theta = azim_deg
     th = np.radians(elev_deg); ph = np.radians(azim_deg)
     khat = np.array([np.sin(th)*np.cos(ph), np.sin(th)*np.sin(ph), np.cos(th)])
     if np.abs(np.sin(th)) < 1e-8:
@@ -1513,19 +1515,19 @@ def get_z_sample(conf: object = None, offset=50.0,
     z_refl  = offset
     return z_trans, z_refl
 
-def get_jones_matrices(S_sim, elev_deg, azim_deg, conf: object):
+def get_jones_matrices(S_sim, elev_deg, azim_deg, conf: object):  # NOTE: old version using our sp basis
 
     layers = conf.layers
     n_grid = conf.n_grid
 
-    s4phi = 90 - elev_deg   # Unfortuantely, S4 has its own angle convention
-    s4theta = azim_deg      
+    # s4phi = 90 - elev_deg   # Unfortuantely, S4 has its own angle convention
+    # s4theta = azim_deg      
 
     """
     Compute Jones T and R matrices by field sampling.
     z coordinates computed from layers list rather than hardcoded globals.
     """
-    s_hat, p_hat = sp_basis(s4phi, s4theta)
+    s_hat, p_hat = sp_basis(elev_deg, azim_deg)
     z_trans, z_refl = get_z_sample(layers=layers)
 
     T = np.zeros((2, 2), dtype=complex)
@@ -1546,6 +1548,38 @@ def get_jones_matrices(S_sim, elev_deg, azim_deg, conf: object):
 
     return T, R
 
+# def get_jones_matrices(S_sim, elev_deg, azim_deg, conf):    # NOTE: this version uses native S4 polarization basis
+#     """
+#     Jones transmission matrix in S4's native (s,p) basis.
+#     At azim=90: s = x-polarized (X-mode, sees n_e), p = y-polarized (Y-mode, sees n_o)
+#     At azim=0:  s = y-polarized, p = x-polarized
+#     Row 0 = s-output (Ey at azim=0, Ex at azim=90)
+#     Row 1 = p-output (Ex at azim=0, Ey at azim=90)
+#     """
+#     z_trans, _ = get_z_sample(layers=conf.layers)
+#     n_grid = conf.n_grid
+
+#     # Handle negative angles by flipping azimuth
+#     phi   = abs(float(elev_deg))
+#     theta = float(azim_deg) if elev_deg >= 0 else (float(azim_deg) + 180) % 360
+
+#     T = np.zeros((2, 2), dtype=complex)
+
+#     for j, (sa, pa) in enumerate([(1., 0.), (0., 1.)]):
+#         S_sim.SetExcitationPlanewave(
+#             IncidenceAngles=(phi, theta),
+#             sAmplitude=sa, pAmplitude=pa, Order=0)
+#         E, _ = S_sim.GetFieldsOnGridNumpy(z_trans, (n_grid, n_grid))
+#         # S4 native: Ex=E[:,:,0], Ey=E[:,:,1]
+#         # s-output = Ey (at azim=0) or Ex (at azim=90)
+#         # BUT: just keep S4's native (s,p) definition throughout —
+#         # column j=0: s-input, column j=1: p-input
+#         # row 0: s-output = Ey component of transmitted field
+#         # row 1: p-output = Ex component of transmitted field
+#         T[0, j] = E[:,:,1].mean()   # Ey = s-output
+#         T[1, j] = E[:,:,0].mean()   # Ex = p-output
+#     return T, None
+
 # ── Post-processing ────────────────────────────────────────────────────────
 def jones_to_circular(T):
     U = np.array([[1,1],[1j,-1j]]) / np.sqrt(2)
@@ -1555,6 +1589,8 @@ def compute_observables(T):
     t_ss,t_sp = T[0,0],T[0,1]; t_ps,t_pp = T[1,0],T[1,1]
     Tc = jones_to_circular(T)
     t_RR,t_RL = Tc[0,0],Tc[0,1]; t_LR,t_LL = Tc[1,0],Tc[1,1]
+    T_s = float(abs(t_ss)**2 + abs(t_ps)**2)
+    T_p = float(abs(t_pp)**2 + abs(t_sp)**2)
     return {
         'T_ss': float(abs(t_ss)**2),
         'T_ps': float(abs(t_ps)**2),
@@ -1577,6 +1613,12 @@ def compute_observables(T):
         't_ps_re': float(t_ps.real), 't_ps_im': float(t_ps.imag),
         't_sp_re': float(t_sp.real), 't_sp_im': float(t_sp.imag),
         't_pp_re': float(t_pp.real), 't_pp_im': float(t_pp.imag),
+        'R_s':     1.0 - T_s,
+        'R_p':     1.0 - T_p,
+        'R_total': 1.0 - (T_s + T_p) / 2,
+        'T_s': T_s,
+        'T_p': T_p,
+        'T_total': (T_s + T_p)/2
     }
 
 
@@ -1899,6 +1941,7 @@ def plot_study0(df, conf: object,
 def plot_study1(df, conf: object, rot_deg: float = None, tilt_deg: float = None, tilt_azim_deg: float = None,
                 azim_vals=None, x_col='elev',
                 elev_range=None, S1max=1.0, S3max=1.0, CDmax=1.0,
+                preset: str = None,
                 save_fig=False):
     """
     E vs k dispersion plots.
@@ -1921,14 +1964,47 @@ def plot_study1(df, conf: object, rot_deg: float = None, tilt_deg: float = None,
     a                               = conf.lattice_const
     if azim_vals is None: azim_vals = conf.study1.azim_vals
 
-    panels = [
-        ('T_ss',  r'$T_{ss}$',              'magma',  0,      1     ),
-        ('T_pp',  r'$T_{pp}$',              'magma',  0,      1     ),
-        ('S0_s',  r'$S_0^{(s)}$',           'magma',  0,      1     ),
-        ('S1_s',  r'$S_1^{(s)}$ TE-TM',    'RdBu_r', -S1max, S1max ),
-        ('S3_s',  r'$S_3^{(s)}$ circular',  'PiYG',   -S3max, S3max ),
-        ('CD',    r'$T_{RR}-T_{LL}$',        'PiYG',   -CDmax, CDmax ),
-    ]
+    match preset:
+        case 'dbr':
+            panels = [('R_total', r'$R_{tot}$', 'magma', 0, 1),
+                      ('T_total', r'$T_{tot}$', 'magma', 0, 1)]
+        case _:
+            panels = [
+                ('T_ss',  r'$T_{ss}$',              'magma',  0,      1     ),
+                ('T_pp',  r'$T_{pp}$',              'magma',  0,      1     ),
+                ('S0_s',  r'$S_0^{(s)}$',           'magma',  0,      1     ),
+                ('S1_s',  r'$S_1^{(s)}$ TE-TM',    'RdBu_r', -S1max, S1max ),
+                ('S1_p',  r'$S_1^{(p)}$ TE-TM',    'RdBu_r', -S1max, S1max ),
+                ('S3_s',  r'$S_3^{(s)}$ circular',  'PiYG',   -S3max, S3max ),
+                ('CD',    r'$T_{RR}-T_{LL}$',        'PiYG',   -CDmax, CDmax ),
+                ('R_s',   r'$R_{s}$',               'magma', 0,     1         ),
+                ('R_p',   r'$R_{p}$',               'magma', 0,     1         ),
+                ('R_total',  r'$R_{tot}$',               'magma_r', 0,     1         ),
+                # ('T_ss'       , r'$T_{ss}$', 'magma', 0, 1                                                       ),
+                # ('T_ps'       , r'$T_{ps}$', 'magma', 0, 1                                         ),
+                # ('T_sp'       , r'$T_{sp}$', 'magma', 0, 1                                             ),                                               
+                # ('T_pp'       , r'$T_{pp}$', 'magma', 0, 1                                         ),
+                # ('S0_s'       , r'$S_{0}^{(s)}$', 'magma', 0, 1                                         ),
+                # ('S1_s'       , r'$S_{1}^{(s)}$', 'magma', 0, 1                                         ),
+                # ('S2_s'       , r'$S_{2}^{(s)}$', 'magma', 0, 1                                         ),
+                # ('S3_s'       , r'$S_{3}^{(s)}$', 'magma', 0, 1                                         ),
+                # ('S0_p'       , r'$S_{0}^{(p)}$', 'magma', 0, 1                                         ),
+                # ('S1_p'       , r'$S_{1}^{(p)}$', 'magma', 0, 1                                         ),
+                # ('S2_p'       , r'$S_{2}^{(p)}$', 'magma', 0, 1                                         ),
+                # ('S3_p'       , r'$S_{3}^{(p)}$', 'magma', 0, 1                                         ),
+                # ('T_RR'       , r'$T_{RR}$', 'magma', 0, 1                                         ),
+                # ('T_LL'       , r'$T_{LL}$', 'magma', 0, 1                                         ),
+                # ('T_RL'       , r'$T_{RL}$', 'magma', 0, 1                                         ),
+                # ('T_LR'       , r'$T_{LR}$', 'magma', 0, 1                                         ),
+                # ('CD'         , r'$CD$', 'magma', 0, 1                                         ) ,
+                # ('t_ss_re'    , r'$\Re{t_{ss}}$', 'magma', 0, 1                                             ),
+                # ('t_ps_re'    , r'$\Re{t_{ps}}$', 'magma', 0, 1                                             ),
+                # ('t_sp_re'    , r'$\Re{t_{sp}}$', 'magma', 0, 1                                             ),
+                # ('t_pp_re'    , r'$\Re{t_{pp}}$', 'magma', 0, 1                                             ),
+                # ('R_s'        , r'$R_s$', 'magma', 0, 1                                         ),
+                # ('R_p'        , r'$R_p$', 'magma', 0, 1                                             ),
+                # ('R_total'    , r'$R_{tot}$', 'magma', 0, 1                                             ),
+            ]
 
     rot_filter      = round(rot_deg         or 0.0, 2)
     tilt_filter     = round(tilt_deg        or 0.0, 2)
@@ -2594,9 +2670,9 @@ def run_study1(conf: object, print_every: int = None):
 
     df = pd.DataFrame(all_rows)
 
-    print(f'%--'*30)
     print(f"Study 1 done in {(time.perf_counter()-t0)/60:.1f} min")
-    
+    print(f'%--'*30)
+
     fname = make_study_fname(1, conf)
     csv_path, _ = save_study(df, conf, fname)
     print(f"Data saved as {csv_path.name} ({len(df)} rows)")
