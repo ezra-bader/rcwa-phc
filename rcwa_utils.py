@@ -52,13 +52,13 @@ def make_stack_slug(conf: object) -> str:
         if mat == 'Air' and L.pattern is None and (is_first or is_last):
             continue
         entries.append((mat, L.thickness, L.pattern, L.ff,
-                         L.layer_rot, L.layer_tilt, L.layer_tilt_azim, L))
+                         L.layer_rot, L))
 
     # Collapse repeating 2-layer DBR pairs
     parts = [f'A{fmt(a)}']
     i = 0
     while i < len(entries):
-        mat, thick, pat, ff, rot, tilt, tilt_azim, layer_obj = entries[i]
+        mat, thick, pat, ff, rot, layer_obj = entries[i]
 
         # Try to match a repeating 2-layer unit
         if i + 1 < len(entries):
@@ -87,9 +87,6 @@ def make_stack_slug(conf: object) -> str:
             seg += f'-cub-w0{fmt(layer_obj.w0)}-a{fmt(layer_obj.alpha)}'
         if rot:
             seg += f'_rot{int(round(rot)):02d}'
-        if tilt:
-            azim = int(round(tilt_azim or 0))
-            seg += f'_tilt{int(round(tilt)):02d}_tiltazim{azim:02d}'
         parts.append(seg)
         i += 1
 
@@ -128,9 +125,6 @@ def make_study_fname(study: int, conf: object) -> str:
 
     # We only want to specify global tensor index rotation/tilt if non-zero value specified in config:
     if conf.global_rot: parts.append(f'rot{int(round(conf.global_rot)):02d}') 
-    if conf.global_tilt: 
-        azim = conf.global_tilt_azim or 0
-        parts.append(f'tilt{int(round(conf.global_tilt)):02d}_tiltazim{int(round(azim)):02d}')
 
     parts.append(f'nb{n_basis}')
 
@@ -175,60 +169,15 @@ def rotation_matrix_z(rot_deg: float) -> np.ndarray:
     c, s = np.cos(np.radians(rot_deg)), np.sin(np.radians(rot_deg))
     return np.array([[c,-s,0],[s,c,0],[0,0,1]])
 
-# If we want to tilt the optical axis out of the xy plane, e.g. to
-# mimic a birefringent liquid crystal with applied voltage.
-def rotation_matrix_tilt(tilt_deg: float, azim_deg: float = 0.0) -> np.ndarray:       
-    '''
-    Tilts ẑ by tilt_deg toward the direction azim_deg in the xy-plane.
-    azim_deg = 0 --> tilt toward +x̂
-    azim_deg = 90 --> tilt toward +ŷ
-    tilt_deg + azim_deg gives full spherical control of optical axis direction.
-    '''
-    th = np.radians(tilt_deg)
-    ph = np.radians(azim_deg)
-    # Rotation axis is perpendicular to both ẑ and n̂
-    # Use Rodrigues' formula
-    nhat = np.array([np.sin(th)*np.cos(ph),
-                     np.sin(th)*np.sin(ph),
-                     np.cos(th)])
-    zhat = np.array([0.,0.,1.])
-    if np.allclose(nhat,zhat): return np.eye(3)
-    if np.allclose(nhat, -zhat): return np.diag([1.,-1.,-1.])    # 180° flip
-    axis = np.cross(zhat, nhat); axis /= np.linalg.norm(axis)
-    angle = np.arccos(np.clip(np.dot(zhat, nhat), -1, 1))
-    # Rodrigues:
-    K = np.array([[0,-axis[2],axis[1]],[axis[2],0,-axis[0]],[-axis[1],axis[0],0]])
-    return np.eye(3) + np.sin(angle)*K + (1-np.cos(angle))*(K@K)
-
-# Given in-plane rotation and out-of-plane tilt angle, we can now
-# transform our permittivity tensor:        # NOTE: Still need to verify this is correct representation
 def rotate_epsilon_tensor(ea, eb, ec,
                           rot_deg: float = 0.0,
-                          tilt_deg: float = 0.0,
-                          tilt_azim_deg: float = 0.0
                           ) -> tuple:
     '''
-    Builds a diagonal permittivity tensor (ea, eb, ec) using the full 3D rotation
-    defined by rot, tilt
-
-    Convention:
     rot_deg:              in-plane rotation of index tensor about ẑ
-    tilt_deg:             tilt of the optical axis away from ẑ towards tilt_azim
-    tilt_azim_deg:        azimuthal direction of the tilt in the xy plane (0 = towards +x̂)
-
-    The applied rotation is R = R_tilt(tilt_deg, tilt_azim_deg) @ R_z(rot_deg)
-        1. First rotate tensor in-plane by rot_deg
-        2. Then tilt the whole thing out of plane by tilt_deg towards tilt_azim_deg
-
-    Returns 3x3 complex-valued tuple to pass to S4.SetMaterial(Epsilon=...)
     '''
-    # Build diagonal epsilon matrix:
     eps_diag = np.diag([ea, eb, ec]).astype(complex)
-    # Full rotation matrix:
-    R = rotation_matrix_tilt(tilt_deg, tilt_azim_deg) @ rotation_matrix_z(rot_deg)
-    # Rotate: eps_lab = R @ eps_crystal @ R.T
+    R = rotation_matrix_z(rot_deg)
     eps_rot = R @ eps_diag @ R.T
-    # Return as nested tuple for S4
     return tuple(tuple(row) for row in eps_rot)
 
 # —— Base class ———————————————————————————————————————————————————————————————
@@ -244,8 +193,6 @@ class Material(ABC):
     @abstractmethod
     def epsilon(self, lam_nm: float, 
                 rot: float = 0.0,
-                tilt: float = 0.0,
-                tilt_azim: float = 0.0
                 ) -> tuple:
         ...
     def __rep__(self):
@@ -273,8 +220,6 @@ class IsotropicMaterial(Material):
     # Returns epsilon tensor to pass to S4.
     def epsilon(self, lam_nm: float,
                 rot: float = 0.0,
-                tilt: float = 0.0,
-                tilt_azim: float = 0.0
                 ) -> tuple:
         e = self._eps
         return ((e,0,0),(0,e,0),(0,0,e))
@@ -325,11 +270,9 @@ class AnisotropicMaterial(Material):
 
     def epsilon(self, lam_nm: float,
                 rot:        float = 0.0,
-                tilt:       float = 0.0,
-                tilt_azim:  float = 0.0,
                 ) -> tuple:
         return rotate_epsilon_tensor(self._eps_xx, self._eps_yy, self._eps_zz,
-                                     rot, tilt, tilt_azim)
+                                     rot)
 
 # —— Birefringent, non-dispersive materials (very similar to anisotropic, but optimized for ReS2)
 class BirefringentMaterial(Material):
@@ -348,11 +291,9 @@ class BirefringentMaterial(Material):
 
     def epsilon(self, lam_nm    : float,
                 rot             : float = 0.0,
-                tilt            : float = 0.0,
-                tilt_azim       : float = 0.0,
                 )-> tuple:
         return rotate_epsilon_tensor(self._eps_xx, self._eps_yy, self._eps_zz,
-                                     rot, tilt, tilt_azim)
+                                     rot)
 
 # —— Uniaxial, non-dispersive materials ———————————————————————————————————————
 # One extraordinary axis, two ordinary.
@@ -364,10 +305,8 @@ class UniaxialMaterial(Material):
     n_e          : extraordinary index (along the optical axis)
     n_o          : ordinary index (along other 2 axes)
     optical_axis : 'x', 'y', or 'z' — which lab axis to set the material's optical axis along prior to any index rotation
-    Supports full 3D rotation.
     Example — homeotropic nematic liquid crystal (long molecular axis, which is parallel with optical axis, aligned normal to substrate):
         UniaxialMaterial('LC', n_o = 1.50, n_e = 1.91, optical_axis = 'z')
-        .epsilon(lam, tilt = 45) --> tilts optical axis from ẑ towards x̂ by 45°
         '''
     
     x, y, z = np.eye(3)
@@ -397,11 +336,9 @@ class UniaxialMaterial(Material):
 
     def epsilon(self, lam_nm: float,
                 rot: float = 0.0,
-                tilt: float = 0.0,
-                tilt_azim: float = 0.0 
                 ) -> tuple:
         return rotate_epsilon_tensor(self._ea, self._eb, self._ec,
-                                     rot, tilt, tilt_azim)
+                                     rot)
     
     def __repr__(self):
         return(f"UniaxialMaterial('{self.name}', n_o={self._n_o}, n_e={self._n_e}, "
@@ -430,14 +367,12 @@ class DispersiveMaterial(Material):
         self._kb = interp1d(lam, data[:,2], kind='cubic', fill_value='extrapolate')
     def epsilon(self, lam_nm: float,
                 rot: float = 0.0,
-                tilt: float = 0.0,
-                tilt_azim: float = 0.0
                 ) -> tuple:
         ea: complex = (self._n_a + 1j*self._k_a)**2
         eb: complex = (float(self._nb(lam_nm)) + 1j*float(self._kb(lam_nm)))**2
         ec: complex = (self._n_c + 1j*self._k_c)**2
         return rotate_epsilon_tensor(ea, eb, ec,
-                                        rot, tilt, tilt_azim)
+                                        rot)
         
 # —— Dispersive biaxial (all 3 axes from file) ————————————————————————————————
 class DispersiveBiaxialMaterial(Material):
@@ -460,14 +395,12 @@ class DispersiveBiaxialMaterial(Material):
         self._kc = interp1d(lam, data[:,6], kind='cubic', fill_value='extrapolate')
     def epsilon(self, lam_nm: float,
                 rot: float = 0.0,
-                tilt: float = 0.0,
-                tilt_azim: float = 0.0
                 ) -> tuple:
         ea = (float(self._na(lam_nm)) + 1j*float(self._ka(lam_nm)))**2
         eb = (float(self._nb(lam_nm)) + 1j*float(self._kb(lam_nm)))**2
         ec = (float(self._nc(lam_nm)) + 1j*float(self._kc(lam_nm)))**2
         return rotate_epsilon_tensor(ea, eb, ec,
-                                     rot, tilt, tilt_azim)
+                                     rot)
     
 class Layer:
     '''
@@ -479,16 +412,10 @@ class Layer:
     pattern             : None | 'hole' | 'pillar' | 'cuboids'
     ff                  : fill factor override (defaults to global FF)
     layer_rot           : in-plane index tensor rotation (CCW)
-    layer_tilt          : polar tilt of optical axis away from its initial direction (degrees)
-                            --> for LC with optical_axis = 'z', 0° = along ẑ (homeotropic), 90° = fully in-plane
-    layer_tilt_azim     : in-plane direction (measured CCW from x̂) along which to apply layer_tilt
-    
     '''
     def __init__(self, material, thickness: float,
                  pattern = None, ff: float = None, 
                  layer_rot: float = None,
-                 layer_tilt: float = None,
-                 layer_tilt_azim: float = None,
                  w0: float = None,
                  alpha: float = None):
         self.material           = material
@@ -496,8 +423,6 @@ class Layer:
         self.pattern            = pattern
         self.ff                 = ff
         self.layer_rot          = layer_rot
-        self.layer_tilt         = layer_tilt
-        self.layer_tilt_azim    = layer_tilt_azim
         self.w0                 = w0
         self.alpha              = alpha
         if self.pattern == 'cuboids' and not (self.w0 or self.alpha):
@@ -526,8 +451,6 @@ class Layer:
         return self.get_material().epsilon(
             lam_nm,
             rot       = self.layer_rot or 0.0,
-            tilt      = self.layer_tilt or 0.0,
-            tilt_azim = self.layer_tilt_azim or 0.0
         )
     def __repr__(self):
         match self.pattern:
@@ -544,17 +467,7 @@ class Layer:
                 rot = ''
             case _:
                 rot = f', rot={self.layer_rot:.0f}°'
-        match self.layer_tilt:
-            case None | 0.0 | 0:
-                tilt = ''
-            case _:
-                tilt = f', tilt={self.layer_tilt:.0f}°'
-        match self.layer_tilt_azim:
-            case None | 0.0 | 0:
-                tilt_azim = ''
-            case _:
-                tilt_azim = f', tiltazim={self.layer_tilt_azim:.0f}°'
-        return f"Layer({self.material}, {self.thickness:.2f}nm{pat}{rot}{tilt}{tilt_azim})"
+        return f"Layer({self.material}, {self.thickness:.2f}nm{pat}{rot})"
 
 #endregion
 
@@ -624,21 +537,21 @@ def check_layers(layers: list = None, conf: object = None):
         layers = conf.layers
 
     # Column widths
-    CW = {'i': 8, 'mat': 12, 'thick': 22, 'pat': 24, 'rot': 12, 'tilt': 18}
+    CW = {'i': 8, 'mat': 12, 'thick': 22, 'pat': 24, 'rot': 8}
 
     header = (f"{'layer':<{CW['i']}}"
               f"{'material':<{CW['mat']}}"
               f"{'thickness (nm)':<{CW['thick']}}"
               f"{'pattern':<{CW['pat']}}"
               f"{'rot (°)':<{CW['rot']}}"
-              f"{'tilt (°)':<{CW['tilt']}}")
+              )
     divider = '-' * sum(CW.values())
 
     lines = [header, divider]
 
     for i, L in enumerate(layers):
         # Format thickness to 2 decimal places
-        thick = f'{L.thickness:.2f}'
+        thick = f'{L.thickness:.2f}'.rstrip('0').rstrip('.')
 
         # Format pattern
         match L.pattern:
@@ -660,27 +573,12 @@ def check_layers(layers: list = None, conf: object = None):
             case _:
                 rot = f'{L.layer_rot:.1f}'
 
-        # Format tilt
-        match L.layer_tilt:
-            case 0.0:
-                tilt = 0
-            case None:
-                if conf:
-                    azim = conf.global_tilt_azim if conf.global_tilt_azim else 0
-                    tilt = f'{conf.global_tilt:.1f} @ azim {azim:.0f}°'
-                else:
-                    azim = 0#L.layer_tilt_azim if L.layer_tilt_azim else 0
-                    tilt = 0#f'{L.layer_tilt:.1f} @ azim {azim:.0f}°'
-            case _:
-                azim = L.layer_tilt_azim if L.layer_tilt_azim else 0
-                tilt = f'{L.layer_tilt:.1f} @ azim {azim:.0f}°'
-
         lines.append(f"{f'{i}':<{CW['i']}}"
                      f"{str(L.material):<{CW['mat']}}"
                      f"{thick:<{CW['thick']}}"
                      f"{pat:<{CW['pat']}}"
                      f"{rot:<{CW['rot']}}"
-                     f"{tilt:<{CW['tilt']}}")
+                     )
 
     print('\n'.join(lines))
 
@@ -745,8 +643,6 @@ class RCWAConfig:
 
     # Global index rotations
     global_rot          : float = None      # spins tensor index around z axis
-    global_tilt         : float = None      # tilts tensor index away from z axis
-    global_tilt_azim    : float = None      # in-plane direction that global_tilt targets
 
     # Lattice constant
     lattice_const: float = None
@@ -1223,6 +1119,10 @@ def plot_unit_cell(conf: object = None, save_fig=False, title=None):
                 draw_box_t(ax, x2-w2/2, y2-w2/2, z0, w2, w2, h, fc, ec, 0.9, label=None)
                 lbl = None
 
+        else:
+            import warnings
+            warnings.warn(f"Unrecognized pattern '{layer.pattern}' for layer '{mat_name}' — layer will not be drawn.")
+
     # -- 3D axis formatting ────────────────────────────────────────────────────
 
     ztick_reals, ztick_plots, ztick_labels = _make_zticks_transformed(
@@ -1315,13 +1215,7 @@ def _resolve_rotation(layer, conf):
     match layer.layer_rot:
         case None: rot = conf.global_rot if conf.global_rot is not None else 0.0
         case _:    rot = layer.layer_rot
-    match layer.layer_tilt:
-        case None: tilt = conf.global_tilt if conf.global_tilt is not None else 0.0
-        case _:     tilt = layer.layer_tilt
-    match layer.layer_tilt_azim:
-        case None: tilt_azim = conf.global_tilt_azim if conf.global_tilt_azim is not None else 0.0
-        case _:    tilt_azim = layer.layer_tilt_azim
-    return float(rot), float(tilt), float(tilt_azim)
+    return float(rot)
 
 def build_simulation(conf: object, 
                     lam_nm: float,
@@ -1377,19 +1271,9 @@ def build_simulation(conf: object,
                         eff_rot = conf.global_rot
             case _:
                 eff_rot = layer.layer_rot
-        match layer.layer_tilt:
-            case None:
-                match conf.global_tilt:
-                    case 0.0 | None:
-                        eff_tilt = 0.0; eff_tilt_azim = 0.0
-                    case _:
-                        eff_tilt = conf.global_tilt
-                        eff_tilt_azim = conf.global_tilt_azim if conf.global_tilt_azim is not None else 0.0
-            case _:
-                eff_tilt = layer.layer_tilt
-                eff_tilt_azim = layer.layer_tilt_azim if layer.layer_tilt_azim is not None else 0.0
+  
 
-        key = (mat.name, eff_rot, eff_tilt, eff_tilt_azim)
+        key = (mat.name, eff_rot)
 
         if key not in s4_name_map:
             # Generate a unique S4 material name
@@ -1399,8 +1283,6 @@ def build_simulation(conf: object,
             # Compute epsilon at this wavelength and orientation
             eps = mat.epsilon(lam_nm,
                               rot       = eff_rot,
-                              tilt      = eff_tilt,
-                              tilt_azim = eff_tilt_azim
                             )
             S.SetMaterial(Name=s4_name, Epsilon=eps)
 
@@ -1473,31 +1355,29 @@ def update_simulation_materials(S,
     updated = set()
     for layer in layers:
         mat      = layer.get_material()
-        eff_rot, eff_tilt, eff_tilt_azim = _resolve_rotation(layer, conf)
-        key      = (mat.name, eff_rot, eff_tilt, eff_tilt_azim)
+        eff_rot = _resolve_rotation(layer, conf)
+        key      = (mat.name, eff_rot)
 
         if key not in updated and hasattr(layer, '_s4_name'):
             eps = mat.epsilon(lam_nm,
                             eff_rot,
-                            eff_tilt,
-                            eff_tilt_azim
                             )
             S.SetMaterial(Name=layer._s4_name, Epsilon=eps)
             updated.add(key)
 
 # ── Stack geometry helpers, Jones matrix sampling ──────────────────────────────────
 
-def sp_basis(elev_deg, azim_deg):   # NOTE: not using this anymore, S4 has native polarization basis
-    # Convert elev_deg into what S4 documentation specifies
-    # s4phi = 90-elev_deg; s4theta = azim_deg
-    th = np.radians(elev_deg); ph = np.radians(azim_deg)
-    khat = np.array([np.sin(th)*np.cos(ph), np.sin(th)*np.sin(ph), np.cos(th)])
-    if np.abs(np.sin(th)) < 1e-8:
-        return np.array([0.,1.,0.]), np.array([1.,0.,0.])
-    zhat = np.array([0.,0.,1.])
-    s = np.cross(khat, zhat); s /= np.linalg.norm(s)
-    p = np.cross(s, khat)
-    return s, p
+# def sp_basis(elev_deg, azim_deg):   # NOTE: not using this anymore, S4 has native polarization basis
+#     # Convert elev_deg into what S4 documentation specifies
+#     # s4phi = 90-elev_deg; s4theta = azim_deg
+#     th = np.radians(elev_deg); ph = np.radians(azim_deg)
+#     khat = np.array([np.sin(th)*np.cos(ph), np.sin(th)*np.sin(ph), np.cos(th)])
+#     if np.abs(np.sin(th)) < 1e-8:
+#         return np.array([0.,1.,0.]), np.array([1.,0.,0.])
+#     zhat = np.array([0.,0.,1.])
+#     s = np.cross(khat, zhat); s /= np.linalg.norm(s)
+#     p = np.cross(s, khat)
+#     return s, p
 
 def get_z_sample(conf: object = None, offset=50.0,
                  layers: list = None):
@@ -1515,110 +1395,71 @@ def get_z_sample(conf: object = None, offset=50.0,
     z_refl  = offset
     return z_trans, z_refl
 
-def get_jones_matrices(S_sim, elev_deg, azim_deg, conf: object):  # NOTE: old version using our sp basis
+def get_jones_matrices(S_sim, elev_deg, azim_deg, conf):
+    phi   = abs(float(elev_deg))
+    theta = float(azim_deg) if elev_deg >= 0 else (float(azim_deg) + 180) % 360
 
-    layers = conf.layers
-    n_grid = conf.n_grid
-
-    # s4phi = 90 - elev_deg   # Unfortuantely, S4 has its own angle convention
-    # s4theta = azim_deg      
-
-    """
-    Compute Jones T and R matrices by field sampling.
-    z coordinates computed from layers list rather than hardcoded globals.
-    """
-    s_hat, p_hat = sp_basis(elev_deg, azim_deg)
-    z_trans, z_refl = get_z_sample(layers=layers)
+    n_G   = len(S_sim.GetBasisSet())   # actual number of G-vectors used
+    first_layer = 'L0'
+    last_layer  = f'L{len(conf.layers)-1}'
 
     T = np.zeros((2, 2), dtype=complex)
     R = np.zeros((2, 2), dtype=complex)
 
     for j, (sa, pa) in enumerate([(1., 0.), (0., 1.)]):
-        S_sim.SetExcitationPlanewave(IncidenceAngles=(elev_deg, azim_deg),
-                                      sAmplitude=sa, pAmplitude=pa, Order=0)
-        E_t, _ = S_sim.GetFieldsOnGridNumpy(z_trans, (n_grid, n_grid))
-        Eout = np.array([E_t[:,:,0].mean(), E_t[:,:,1].mean(), 0.])
-        T[0,j] = np.dot(Eout, s_hat)
-        T[1,j] = np.dot(Eout, p_hat)
+        S_sim.SetExcitationPlanewave(
+            IncidenceAngles=(phi, theta),
+            sAmplitude=sa, pAmplitude=pa, Order=0)
 
-        E_r, _ = S_sim.GetFieldsOnGridNumpy(z_refl, (n_grid, n_grid))
-        Erefl = np.array([E_r[:,:,0].mean(), E_r[:,:,1].mean(), 0.])
-        R[0,j] = np.dot(Erefl, s_hat)
-        R[1,j] = np.dot(Erefl, p_hat)
+        # Reflection: backward amplitudes in incident layer
+        _, back = S_sim.GetAmplitudes(Layer=first_layer, zOffset=0)
+        R[0, j] = back[0]      # s-output (0th order, first polarization)
+        R[1, j] = back[n_G]    # p-output (0th order, second polarization)
+
+        # Transmission: forward amplitudes in substrate layer
+        forw, _ = S_sim.GetAmplitudes(Layer=last_layer, zOffset=0)
+        T[0, j] = forw[0]      # s-output
+        T[1, j] = forw[n_G]    # p-output
 
     return T, R
-
-# def get_jones_matrices(S_sim, elev_deg, azim_deg, conf):    # NOTE: this version uses native S4 polarization basis
-#     """
-#     Jones transmission matrix in S4's native (s,p) basis.
-#     At azim=90: s = x-polarized (X-mode, sees n_e), p = y-polarized (Y-mode, sees n_o)
-#     At azim=0:  s = y-polarized, p = x-polarized
-#     Row 0 = s-output (Ey at azim=0, Ex at azim=90)
-#     Row 1 = p-output (Ex at azim=0, Ey at azim=90)
-#     """
-#     z_trans, _ = get_z_sample(layers=conf.layers)
-#     n_grid = conf.n_grid
-
-#     # Handle negative angles by flipping azimuth
-#     phi   = abs(float(elev_deg))
-#     theta = float(azim_deg) if elev_deg >= 0 else (float(azim_deg) + 180) % 360
-
-#     T = np.zeros((2, 2), dtype=complex)
-
-#     for j, (sa, pa) in enumerate([(1., 0.), (0., 1.)]):
-#         S_sim.SetExcitationPlanewave(
-#             IncidenceAngles=(phi, theta),
-#             sAmplitude=sa, pAmplitude=pa, Order=0)
-#         E, _ = S_sim.GetFieldsOnGridNumpy(z_trans, (n_grid, n_grid))
-#         # S4 native: Ex=E[:,:,0], Ey=E[:,:,1]
-#         # s-output = Ey (at azim=0) or Ex (at azim=90)
-#         # BUT: just keep S4's native (s,p) definition throughout —
-#         # column j=0: s-input, column j=1: p-input
-#         # row 0: s-output = Ey component of transmitted field
-#         # row 1: p-output = Ex component of transmitted field
-#         T[0, j] = E[:,:,1].mean()   # Ey = s-output
-#         T[1, j] = E[:,:,0].mean()   # Ex = p-output
-#     return T, None
 
 # ── Post-processing ────────────────────────────────────────────────────────
 def jones_to_circular(T):
     U = np.array([[1,1],[1j,-1j]]) / np.sqrt(2)
     return U.conj().T @ T @ U
 
-def compute_observables(T):
-    t_ss,t_sp = T[0,0],T[0,1]; t_ps,t_pp = T[1,0],T[1,1]
-    Tc = jones_to_circular(T)
-    t_RR,t_RL = Tc[0,0],Tc[0,1]; t_LR,t_LL = Tc[1,0],Tc[1,1]
-    T_s = float(abs(t_ss)**2 + abs(t_ps)**2)
-    T_p = float(abs(t_pp)**2 + abs(t_sp)**2)
+def compute_observables(T,R):
+    def stokes_from_jones(J):
+        j00, j10 = J[0,0], J[1,0]
+        j01, j11 = J[0,1], J[1,1]
+        Jc = jones_to_circular(J)
+        RR, RL = Jc[0,0], Jc[0,1]
+        LR, LL = Jc[1,0], Jc[1,1]
+        return {
+            'ss': float(abs(j00)**2),
+            'ps': float(abs(j10)**2),
+            'sp': float(abs(j01)**2),
+            'pp': float(abs(j11)**2),
+            'S0s': float(abs(j00)**2 + abs(j10)**2),
+            'S1s': float(abs(j00)**2 - abs(j10)**2),
+            'S2s': float(2*np.real(j00*np.conj(j10))),
+            'S3s': float(2*np.imag(j00*np.conj(j10))),
+            'S0p': float(abs(j11)**2 + abs(j01)**2),
+            'S1p': float(abs(j11)**2 - abs(j01)**2),
+            'S2p': float(2*np.real(j11*np.conj(j01))),
+            'S3p': float(2*np.imag(j11*np.conj(j01))),
+            'RR': float(abs(RR)**2),
+            'LL': float(abs(LL)**2),
+            'RL': float(abs(RL)**2),
+            'LR': float(abs(LR)**2),
+            'CD': float(abs(RR)**2 - abs(LL)**2),
+            'total': float((abs(j00)**2 + abs(j10)**2 + abs(j01)**2 + abs(j11)**2) / 2),
+        }
+    t = stokes_from_jones(T)
+    r = stokes_from_jones(R)
     return {
-        'T_ss': float(abs(t_ss)**2),
-        'T_ps': float(abs(t_ps)**2),
-        'T_sp': float(abs(t_sp)**2),
-        'T_pp': float(abs(t_pp)**2),
-        'S0_s': float(abs(t_ss)**2 + abs(t_ps)**2),
-        'S1_s': float(abs(t_ss)**2 - abs(t_ps)**2),
-        'S2_s': float(2*np.real(t_ss*np.conj(t_ps))),
-        'S3_s': float(2*np.imag(t_ss*np.conj(t_ps))),
-        'S0_p': float(abs(t_pp)**2 + abs(t_sp)**2),
-        'S1_p': float(abs(t_pp)**2 - abs(t_sp)**2),
-        'S2_p': float(2*np.real(t_pp*np.conj(t_sp))),
-        'S3_p': float(2*np.imag(t_pp*np.conj(t_sp))),
-        'T_RR': float(abs(t_RR)**2),
-        'T_LL': float(abs(t_LL)**2),
-        'T_RL': float(abs(t_RL)**2),
-        'T_LR': float(abs(t_LR)**2),
-        'CD':   float(abs(t_RR)**2 - abs(t_LL)**2),
-        't_ss_re': float(t_ss.real), 't_ss_im': float(t_ss.imag),
-        't_ps_re': float(t_ps.real), 't_ps_im': float(t_ps.imag),
-        't_sp_re': float(t_sp.real), 't_sp_im': float(t_sp.imag),
-        't_pp_re': float(t_pp.real), 't_pp_im': float(t_pp.imag),
-        'R_s':     1.0 - T_s,
-        'R_p':     1.0 - T_p,
-        'R_total': 1.0 - (T_s + T_p) / 2,
-        'T_s': T_s,
-        'T_p': T_p,
-        'T_total': (T_s + T_p)/2
+        **{f'T_{k}': v for k, v in t.items()},
+        **{f'R_{k}': v for k, v in r.items()},
     }
 
 
@@ -1633,12 +1474,11 @@ def convergence_test(conf: object, lam_nm: float = None, elev_deg=5.0, azim_deg=
     layers = conf.layers
     lam_nm = lam_nm or float(np.median(conf.wavelengths))
     rot = conf.global_rot or 0.0
-    tilt = conf.global_tilt or 0.0
 
     # print()
     print(f'%--'*30)
     print(f"Convergence test: λ={lam_nm:.0f} nm  elev={elev_deg:.1f}°  "
-          f"azim={azim_deg:.0f}°  rot={rot:.0f}°  tilt={tilt:.0f}°")
+          f"azim={azim_deg:.0f}°  rot={rot:.0f}°")
     print(f"Stack: {' | '.join(repr(L) for L in layers)}")
     print(f"| {'NumBasis':>10}  {'T_ss':>10}  {'T_pp':>10}  {'|dT_ss|':>10}  {'time(ms)':>10}")
 
@@ -1666,12 +1506,11 @@ def convergence_test_phase(conf:object, lam_nm=None, elev_deg=5.0, azim_deg=0.0,
     if lam_nm is None:
         lam_nm = float(np.median(conf.wavelengths))
     rot = conf.global_rot or 0.0
-    tilt = conf.global_tilt or 0.0
 
     # print()
     print(f'%--'*30)
     print(f"Phase convergence: λ={lam_nm:.0f} nm  elev={elev_deg:.1f}°  "
-          f"azim={azim_deg:.0f}°    rot={rot:.0f}°    tilt={tilt:.0f}°")
+          f"azim={azim_deg:.0f}°    rot={rot:.0f}°  ")
     print(f"| {'NumBasis':>10}  {'|t_ss|':>10}  {'phase_ss (deg)':>16}  "
           f"{'CD':>10}  {'time(ms)':>10}")
     for nb in basis_vals:
@@ -1698,12 +1537,11 @@ def scan_wavelengths(conf: object, lam_vals = None, n_basis=25, elev_deg=0.0, az
     lam_vals = lam_vals or conf.wavelengths[::4]  # every 5th point for speed
     n_basis = n_basis or conf.n_basis
     rot = conf.global_rot or 0.0
-    tilt = conf.global_tilt or 0.0
 
     # print()
     print(f'%--'*30)
     print(f"Wavelength scan: elev={elev_deg:.1f}°  azim={azim_deg:.0f}°  "
-          f"rot={rot:.0f}°      tilt={tilt:.0f}°    N_BASIS={n_basis}")
+          f"rot={rot:.0f}°      N_BASIS={n_basis}")
     print(f"{'lam (nm)':>10}  {'energy (eV)':>12}  {'T_ss':>10}  "
           f"{'T_pp':>10}  {'T_ss+T_pp':>12}")
 
@@ -1733,8 +1571,7 @@ def verify_energy_conservation(conf: object, lam_nm=None, elev_deg=10.0,
     """
     layers = conf.layers
     lam_nm = lam_nm or float(np.median(conf.wavelengths))
-    rot = conf.global_rot or 0.0
-    tilt = conf.global_tilt or 0.0
+    rot = rot_deg or conf.global_rot or 0.0
 
     first_layer  = layers[0].get_material().name
     last_layer   = layers[-1].get_material().name
@@ -1743,7 +1580,7 @@ def verify_energy_conservation(conf: object, lam_nm=None, elev_deg=10.0,
     print(f'%--'*30)
     print(f"Energy conservation check:")
     print(f"|  λ={lam_nm:.0f} nm  elev={elev_deg:.1f}°  "
-          f"azim={azim_deg:.0f}°  rot={rot:.0f}°    tilt={tilt:.0f}°")
+          f"azim={azim_deg:.0f}°  rot={rot:.0f}°    ")
     print(f"|  Stack: {' | '.join(repr(L) if isinstance(L.material,str) else L.get_material().name for L in layers)}")
     print(f"|  Incident medium: {first_layer}  |  Substrate: {last_layer}")
 
@@ -1938,7 +1775,7 @@ def plot_study0(df, conf: object,
 
 # ── Study 1 plot ──────────────────────────────────────────────────────────────
 
-def plot_study1(df, conf: object, rot_deg: float = None, tilt_deg: float = None, tilt_azim_deg: float = None,
+def plot_study1(df, conf: object, rot_deg: float = None, 
                 azim_vals=None, x_col='elev',
                 elev_range=None, S1max=1.0, S3max=1.0, CDmax=1.0,
                 preset: str = None,
@@ -1952,8 +1789,6 @@ def plot_study1(df, conf: object, rot_deg: float = None, tilt_deg: float = None,
     layers               : list of Layer (for title metadata)
     a                    : lattice constant nm (for title)
     rot_deg              : which in-plane tensor rotation slice to plot
-    tilt_deg             : which tensor tilt angle to plot
-    tilt_azim_deg        : which tilt @ azim angle to plot
     azim_vals            : list of azimuths to show as rows
     x_col                : 'elev' or 'k_parallel'
     elev_range           : (min_deg, max_deg) to crop x-axis
@@ -1965,9 +1800,39 @@ def plot_study1(df, conf: object, rot_deg: float = None, tilt_deg: float = None,
     if azim_vals is None: azim_vals = conf.study1.azim_vals
 
     match preset:
+        case 'LC':
+            panels = [('R_total', r'$R_{tot}$', 'magma', 0, 1),
+                      ('T_total', r'$T_{tot}$', 'magma', 0, 1),
+                      ('R_S0_s',  r'$S_0^{(s)}$',           'magma',  0,      1     ),
+                      ('R_S1_s',  r'$S_1^{(s)}$ TE-TM',    'RdBu_r', -S1max, S1max ),
+                      ('R_S0_p',  r'$S_1^{(p)}$ TE-TM',    'RdBu_r', -S1max, S1max ),
+                      ('R_S1_p',  r'$S_1^{(p)}$ TE-TM',    'RdBu_r', -S1max, S1max ),
+                      ('R_S3_s',  r'$S_3^{(s)}$ circular',  'PiYG',   -S3max, S3max ),
+                      ('R_S3_p',  r'$S_3^{(s)}$ circular',  'PiYG',   -S3max, S3max ),
+                      ('R_CD',      r'$|RR|^2-|LL|^2$', 'RdBu_r', -1, 1),
+                      ]
+        
         case 'dbr':
             panels = [('R_total', r'$R_{tot}$', 'magma', 0, 1),
                       ('T_total', r'$T_{tot}$', 'magma', 0, 1)]
+        case 'crsbr':
+            panels = [
+                # ('R_total',  r'$R_{tot}$',              'magma', 0,     1         ),
+                # ('T_total',  r'$T_{tot}$',              'magma', 0,     1         ),
+                ('R_ss',  r'$R_{s\rightarrow s}$',              'magma', 0,     1         ),
+                ('R_pp',  r'$R_{p\rightarrow p}$',              'magma', 0,     1         ),
+                # ('T_ss',  r'$T_{ss}$',              'magma',  0,      1     ),
+                # ('T_pp',  r'$T_{pp}$',              'magma',  0,      1     ),
+                # ('S0_s',  r'$S_0^{(s)}$',           'magma',  0,      1     ),
+                # ('S0_p',  r'$S_0^{(p)}$',           'magma',  0,      1     ),
+                # ('S1_s',  r'$S_1^{(s)}$ TE-TM',    'RdBu_r', -S1max, S1max ),
+                # ('S1_p',  r'$S_1^{(p)}$ TE-TM',    'RdBu_r', -S1max, S1max ),
+                # ('S3_s',  r'$S_3^{(s)}$ circular',  'PiYG',   -S3max, S3max ),
+                # ('CD',    r'$T_{RR}-T_{LL}$',        'PiYG',   -CDmax, CDmax ),
+                # ('R_s',   r'$R_{s}$',               'magma', 0,     1         ),
+                # ('R_p',   r'$R_{p}$',               'magma', 0,     1         ),
+                
+            ]
         case _:
             panels = [
                 ('T_ss',  r'$T_{ss}$',              'magma',  0,      1     ),
@@ -2007,12 +1872,8 @@ def plot_study1(df, conf: object, rot_deg: float = None, tilt_deg: float = None,
             ]
 
     rot_filter      = round(rot_deg         or 0.0, 2)
-    tilt_filter     = round(tilt_deg        or 0.0, 2)
-    azim_filter     = round(tilt_azim_deg   or 0.0, 2)
     df_rta = df[
-        (df['rot'].round(2)         == rot_filter) &
-        (df['tilt'].round(2)        == tilt_filter) &
-        (df['tiltazim'].round(2)    == azim_filter)
+        (df['rot'].round(2)         == rot_filter)
     ]
     wl   = sorted(df_rta['lambda0'].unique())
     nrows, ncols = len(azim_vals), len(panels)
@@ -2024,13 +1885,11 @@ def plot_study1(df, conf: object, rot_deg: float = None, tilt_deg: float = None,
     if nrows == 1:
         axes = axes[np.newaxis, :]
 
-    azim_tag = f"{tilt_azim_deg:.0f}°" if tilt_azim_deg is not None else f"0°"
     rot_tag = f"{rot_deg:.0f}°" if rot_deg is not None else f"0°"
-    tilt_tag = f"{tilt_deg:.0f} @ azim = {azim_tag}" if tilt_deg is not None else f"0°"
 
     # title = stack_title(layers, a,
                         # extras=f'rot = {rot_tag}, tilt = {tilt_tag}')
-    title = f'{_make_unit_cell_title(layers, conf.lattice_const)}\nrot = {rot_tag}, tilt = {tilt_tag}'
+    title = f'{_make_unit_cell_title(layers, conf.lattice_const)}\nrot = {rot_tag}'
     fig.suptitle(title, fontsize=14)
 
     for i, az in enumerate(azim_vals):
@@ -2072,9 +1931,8 @@ def plot_study1(df, conf: object, rot_deg: float = None, tilt_deg: float = None,
             fig.colorbar(im, ax=ax, shrink=0.85, pad=0.02)
 
     if save_fig: 
-        tilt_str = f'_tilt{int(tilt_deg or 0):02d}_tiltazim{int(tilt_azim_deg or 0):02d}'
         rot_str = f'_rot{int(rot_deg or 0):02d}'
-        fname = conf.output_dir / f"study1_{make_stack_slug(conf)}{rot_str}{tilt_str}.pdf"
+        fname = conf.output_dir / f"study1_{make_stack_slug(conf)}{rot_str}.pdf"
         fig.savefig(fname, format='pdf', bbox_inches='tight')
         print(f"Saved {fname}")
 
@@ -2625,13 +2483,11 @@ def _worker_study1(conf: object, elev_deg: float, azim_deg: float):
     for lam in wavelengths:
         update_simulation_materials(S, float(lam), conf)
         S.SetFrequency(1.0 / lam)
-        T, _  = get_jones_matrices(S, elev_deg, azim_deg, conf)
-        obs   = compute_observables(T)
+        T, R  = get_jones_matrices(S, elev_deg, azim_deg, conf)
+        obs   = compute_observables(T, R)
         kpar  = (2*np.pi/lam) * np.sin(np.radians(elev_deg))
         row   = {
             'rot':        conf.global_rot if conf.global_rot is not None else 0.0,
-            'tilt':       conf.global_tilt if conf.global_tilt is not None else 0.0,
-            'tiltazim':   conf.global_tilt_azim if (conf.global_tilt is not None and conf.global_tilt_azim is not None) else 0.0,
             'elev':       elev_deg,
             'azim':       azim_deg,
             'lambda0':    lam,
@@ -2708,8 +2564,6 @@ def _worker_study2(conf: object, azim_deg: float, elev_deg: float):
         kpar  = (2*np.pi/lam) * np.sin(np.radians(elev_deg))
         row   = {
             'rot':        conf.global_rot if conf.global_rot is not None else 0.0,
-            'tilt':       conf.global_tilt if conf.global_tilt is not None else 0.0,
-            'tiltazim':   conf.global_tilt_azim if conf.global_tilt_azim is not None else 0.0,
             'elev':       elev_deg,
             'azim':       azim_deg,
             'lambda0':    lam,
