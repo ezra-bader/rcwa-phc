@@ -7,6 +7,7 @@ import time, warnings, itertools
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 import matplotlib.animation as animation
+import matplotlib.colors as mcolors
 from matplotlib.animation import FFMpegWriter
 from scipy.interpolate import interp1d, griddata
 from pathlib import Path
@@ -82,11 +83,11 @@ def make_stack_slug(conf: object) -> str:
         # Single layer
         seg = f'{mat}-{fmt(thick)}'
         if pat in ('hole', 'pillar'):
-            seg += f'-{pat}-ff{fmt(ff)}'
+            seg += f'-{pat}-ff{ff:.2f}'.rstrip('0').rstrip('.')
         elif pat == 'cuboids':
-            seg += f'-cub-w0{fmt(layer_obj.w0)}-a{fmt(layer_obj.alpha)}'
+            seg += f'-cub-w0{fmt(layer_obj.w0)}-a{layer_obj.alpha:.2f}'.rstrip('0').rstrip('.')
         if rot:
-            seg += f'_rot{int(round(rot)):02d}'
+            seg += f'_rot{int(round(rot)):.2f}'.rstrip('0').rstrip('.')
         parts.append(seg)
         i += 1
 
@@ -123,8 +124,8 @@ def make_study_fname(study: int, conf: object) -> str:
     slug   = make_stack_slug(conf)
     parts  = [f'study{study}', slug]
 
-    # We only want to specify global tensor index rotation/tilt if non-zero value specified in config:
-    if conf.global_rot: parts.append(f'rot{int(round(conf.global_rot)):02d}') 
+    # We only want to specify global tensor index rotation if non-zero value specified in config:
+    if conf.global_rot is not None: parts.append(f'rot{int(round(conf.global_rot)):02d}')
 
     parts.append(f'nb{n_basis}')
 
@@ -484,7 +485,8 @@ RU_MATERIALS = {
                                             'moocl2_nm_nxx_kxx_nyy_kyy_nzz_kzz.csv',
                                             delimiter=',', reverse=True),
         'ReS2': BirefringentMaterial('ReS2', eps0=18.0, delta_eps=1.7, eps_zz=7.25),
-        'LC': UniaxialMaterial('LC',n_o=1.50,n_e=1.91, optical_axis='x')
+        'LC': UniaxialMaterial('LC',n_o=1.50,n_e=1.91, optical_axis='x'),
+        'SMILES': IsotropicMaterial('SMILES',n=1.5),
         #To be added: liquid crystal with tilt
         #'LC': UniaxialMaterial('LC', n_o=1.50, n_e=1.70)
         #To be added: DBR layer components
@@ -763,6 +765,7 @@ RU_MATERIAL_COLORS = {
     'MoOCl2': ('darkgoldenrod',  'saddlebrown',   0.70),
     'ReS2':   ('mediumpurple',   'indigo',        0.70),
     'LC':     ('bisque',      'orange',     0.60),
+    'SMILES': ('hotpink',   'deeppink',      0.60)
 }
 def get_material_colors():
     return RU_MATERIAL_COLORS
@@ -1018,7 +1021,7 @@ def plot_unit_cell(conf: object = None, save_fig=False, title=None):
     transform, z_plot_total = _make_z_transform(layers, z_positions)
 
     # -- draw_box: solid rectangular box ──────────────────────────────────────
-    def draw_box(ax, x0, y0, z0, dx, dy, dz, fc, ec, alpha, label=None):
+    def draw_box(ax, x0, y0, z0, dx, dy, dz, fc, ec, alpha, label=None, zsort_override=None):
         x1, y1, z1 = x0+dx, y0+dy, z0+dz
         faces = [
             [[x0,y0,z0],[x1,y0,z0],[x1,y1,z0],[x0,y1,z0]],
@@ -1029,7 +1032,9 @@ def plot_unit_cell(conf: object = None, save_fig=False, title=None):
             [[x1,y0,z0],[x1,y1,z0],[x1,y1,z1],[x1,y0,z1]],
         ]
         poly = Poly3DCollection(faces, alpha=alpha, facecolor=fc,
-                                 edgecolor=ec, linewidth=0.8, label=label,zorder=-z0)
+                                 edgecolor=ec, linewidth=0.8, label=label, zorder=-z0)
+        if zsort_override:
+            poly._sort_zpos=zsort_override
         ax.add_collection3d(poly)
 
     # -- draw_hole_slab: slab with square hole ─────────────────────────────────
@@ -1067,11 +1072,11 @@ def plot_unit_cell(conf: object = None, save_fig=False, title=None):
             ax.plot([hx0,hx1,hx1,hx0,hx0],[hy0,hy0,hy1,hy1,hy0],[z]*5, **ek)
 
     # -- If layers have drastically different thicknesses, may want to compress some in z:
-    def draw_box_t(ax, x0, y0, z0_real, dx, dy, dz_real, fc, ec, alpha, label=None):
+    def draw_box_t(ax, x0, y0, z0_real, dx, dy, dz_real, fc, ec, alpha, label=None, zsort_override=None):
             """draw_box but with z coordinates transformed to plot space."""
             z0p = transform(z0_real)
             z1p = transform(z0_real + dz_real)
-            draw_box(ax, x0, y0, z0p, dx, dy, z1p - z0p, fc, ec, alpha, label)
+            draw_box(ax, x0, y0, z0p, dx, dy, z1p - z0p, fc, ec, alpha, label, zsort_override)
 
     def draw_hole_slab_t(ax, z0_real, dz_real, fc, ec, w, label=None):
         z0p = transform(z0_real)
@@ -1087,6 +1092,9 @@ def plot_unit_cell(conf: object = None, save_fig=False, title=None):
         fc, ec, al = _mat_color(mat_name)
         h  = layer.thickness
         cx = cy = a / 2
+
+        z0p = transform(z0)
+        z1p = transform(z0 + h)
 
         lbl = mat_name if mat_name not in legend_drawn else None
         legend_drawn.add(mat_name)
@@ -1114,9 +1122,9 @@ def plot_unit_cell(conf: object = None, save_fig=False, title=None):
             w1, w2, x1, y1, x2, y2 = layer.get_cuboid_geometry(a)
             air_fc, air_ec, air_al = _mat_color('Air')
             for ax in [ax3d, ax3dside]:
-                draw_box_t(ax, 0, 0, z0, a, a, h, air_fc, air_ec, air_al, label=None)
-                draw_box_t(ax, x1-w1/2, y1-w1/2, z0, w1, w1, h, fc, ec, 0.9, label=lbl)
-                draw_box_t(ax, x2-w2/2, y2-w2/2, z0, w2, w2, h, fc, ec, 0.9, label=None)
+                draw_box_t(ax, 0, 0, z0, a, a, h, air_fc, air_ec, air_al, label=None, zsort_override=None)
+                draw_box_t(ax, x1-w1/2, y1-w1/2, z0, w1, w1, h, fc, ec, 0.9, label=lbl, zsort_override=-z0p-500)
+                draw_box_t(ax, x2-w2/2, y2-w2/2, z0, w2, w2, h, fc, ec, 0.9, label=None, zsort_override=-z0p-500)
                 lbl = None
 
         else:
@@ -1379,29 +1387,110 @@ def update_simulation_materials(S,
 #     p = np.cross(s, khat)
 #     return s, p
 
-def get_z_sample(conf: object = None, offset=50.0,
-                 layers: list = None):
-    """
-    Return (z_trans, z_refl) for field sampling.
-    z_trans : offset nm into the last layer (transmission side)
-    z_refl  : offset nm from the top of the first layer (reflection side)
-    """
-    if not (conf or layers):
-        raise Exception("get_z_zample must be passed either config object or layers list.")
-    layers = layers or conf.layers
-    z_total = sum(L.thickness for L in layers)
-    z_last_start = z_total - layers[-1].thickness
-    z_trans = z_last_start + offset
-    z_refl  = offset
-    return z_trans, z_refl
+# def get_jones_matrices(S_sim, elev_deg, azim_deg, conf):
+#     phi   = abs(float(elev_deg))
+#     theta = float(azim_deg) if elev_deg >= 0 else (float(azim_deg) + 180) % 360
+
+#     n_G         = len(S_sim.GetBasisSet())
+#     first_layer = 'L0'
+#     last_layer  = f'L{len(conf.layers)-1}'
+
+#     # Detect S4's s/p slot ordering at this angle.
+#     # Send in pure s, see which amplitude slot carries the energy.
+#     # Whichever of back[0] or back[n_G] is larger is the s-slot.
+#     S_sim.SetExcitationPlanewave(
+#         IncidenceAngles=(phi, theta),
+#         sAmplitude=1, pAmplitude=0, Order=0)
+#     _, back_probe = S_sim.GetAmplitudes(Layer=first_layer, zOffset=0)
+#     # For a high-reflectance structure the reflected s amplitude dominates;
+#     # for low-R structures use transmission instead as the probe
+#     forw_probe, _ = S_sim.GetAmplitudes(Layer=last_layer, zOffset=0)
+    
+#     # s-slot is whichever has larger total amplitude (reflected + transmitted)
+#     amp_slot0  = abs(back_probe[0])   + abs(forw_probe[0])
+#     amp_slot1  = abs(back_probe[n_G]) + abs(forw_probe[n_G])
+#     s_slot = 0 if amp_slot0 >= amp_slot1 else n_G
+#     p_slot = n_G if s_slot == 0 else 0
+
+#     T = np.zeros((2, 2), dtype=complex)
+#     R = np.zeros((2, 2), dtype=complex)
+
+#     for j, (sa, pa) in enumerate([(1., 0.), (0., 1.)]):
+#         S_sim.SetExcitationPlanewave(
+#             IncidenceAngles=(phi, theta),
+#             sAmplitude=sa, pAmplitude=pa, Order=0)
+
+#         _, back = S_sim.GetAmplitudes(Layer=first_layer, zOffset=0)
+#         R[0, j] = back[s_slot]
+#         R[1, j] = back[p_slot]
+
+#         forw, _ = S_sim.GetAmplitudes(Layer=last_layer, zOffset=0)
+#         T[0, j] = forw[s_slot]
+#         T[1, j] = forw[p_slot]
+
+#     return T, R
+
+# def get_jones_matrices(S_sim, elev_deg, azim_deg, conf):
+#     phi   = abs(float(elev_deg))
+#     theta = float(azim_deg) if elev_deg >= 0 else (float(azim_deg) + 180) % 360
+
+#     n_G         = len(S_sim.GetBasisSet())
+#     first_layer = 'L0'
+#     last_layer  = f'L{len(conf.layers)-1}'
+
+#     # S4 slot 0 corresponds to E along y (s at azim=0)
+#     # S4 slot n_G corresponds to E along x (s at azim=90)
+#     # For arbitrary azimuth, the true s direction is perpendicular
+#     # to the plane of incidence: s_hat = (-sin(azim), cos(azim))
+#     # in the xy plane.
+#     # S4 internal basis: slot 0 ~ y-component, slot n_G ~ x-component
+#     # So: s_amplitude = -sin(azim)*slot[n_G] + cos(azim)*slot[0]
+#     #     p_amplitude =  cos(phi)*(cos(azim)*slot[n_G] + sin(azim)*slot[0])
+#     # (the cos(phi) factor accounts for p having an in-plane component
+#     # reduced by the polar angle, but for amplitude extraction from
+#     # the 0th order we just need the in-plane projection)
+
+#     az = np.radians(float(azim_deg))
+#     cs, ss = np.cos(az), np.sin(az)
+
+#     def extract_sp(amps):
+#         a0  = amps[0]       # y-component (slot 0)
+#         a1  = amps[n_G]     # x-component (slot n_G)
+#         s_amp =  cs * a0 - ss * a1   # E perpendicular to plane of incidence
+#         p_amp =  ss * a0 + cs * a1   # E parallel to plane of incidence
+#         return s_amp, p_amp
+
+#     T = np.zeros((2, 2), dtype=complex)
+#     R = np.zeros((2, 2), dtype=complex)
+
+#     for j, (sa, pa) in enumerate([(1., 0.), (0., 1.)]):
+#         S_sim.SetExcitationPlanewave(
+#             IncidenceAngles=(phi, theta),
+#             sAmplitude=sa, pAmplitude=pa, Order=0)
+
+#         _, back = S_sim.GetAmplitudes(Layer=first_layer, zOffset=0)
+#         forw, _ = S_sim.GetAmplitudes(Layer=last_layer,  zOffset=0)
+
+#         R[0, j], R[1, j] = extract_sp(back)
+#         T[0, j], T[1, j] = extract_sp(forw)
+
+#     return T, R
 
 def get_jones_matrices(S_sim, elev_deg, azim_deg, conf):
     phi   = abs(float(elev_deg))
     theta = float(azim_deg) if elev_deg >= 0 else (float(azim_deg) + 180) % 360
 
-    n_G   = len(S_sim.GetBasisSet())   # actual number of G-vectors used
+    n_G         = len(S_sim.GetBasisSet())
     first_layer = 'L0'
     last_layer  = f'L{len(conf.layers)-1}'
+
+    az = np.radians(float(azim_deg))
+    cs, ss = np.cos(az), np.sin(az)
+
+    def extract_sp(amps):
+        a0 = amps[0]
+        a1 = amps[n_G]
+        return cs*a0 + ss*a1, -ss*a0 + cs*a1
 
     T = np.zeros((2, 2), dtype=complex)
     R = np.zeros((2, 2), dtype=complex)
@@ -1411,57 +1500,161 @@ def get_jones_matrices(S_sim, elev_deg, azim_deg, conf):
             IncidenceAngles=(phi, theta),
             sAmplitude=sa, pAmplitude=pa, Order=0)
 
-        # Reflection: backward amplitudes in incident layer
         _, back = S_sim.GetAmplitudes(Layer=first_layer, zOffset=0)
-        R[0, j] = back[0]      # s-output (0th order, first polarization)
-        R[1, j] = back[n_G]    # p-output (0th order, second polarization)
+        forw, _ = S_sim.GetAmplitudes(Layer=last_layer,  zOffset=0)
 
-        # Transmission: forward amplitudes in substrate layer
-        forw, _ = S_sim.GetAmplitudes(Layer=last_layer, zOffset=0)
-        T[0, j] = forw[0]      # s-output
-        T[1, j] = forw[n_G]    # p-output
+        R[0, j], R[1, j] = extract_sp(back)
+        T[0, j], T[1, j] = extract_sp(forw)
 
     return T, R
 
 # ── Post-processing ────────────────────────────────────────────────────────
-def jones_to_circular(T):
-    U = np.array([[1,1],[1j,-1j]]) / np.sqrt(2)
-    return U.conj().T @ T @ U
+def jones_to_circular(J: np.ndarray) -> np.ndarray:
+    """Convert 2×2 Jones matrix from linear (s,p) to circular (R,L) basis."""
+    U = np.array([[1, 1], [1j, -1j]]) / np.sqrt(2)
+    return np.conj(U).T @ J @ U
 
-def compute_observables(T,R):
-    def stokes_from_jones(J):
-        j00, j10 = J[0,0], J[1,0]
-        j01, j11 = J[0,1], J[1,1]
-        Jc = jones_to_circular(J)
-        RR, RL = Jc[0,0], Jc[0,1]
-        LR, LL = Jc[1,0], Jc[1,1]
+def compute_observables(T: np.ndarray, R: np.ndarray) -> dict:
+    """
+    Store only raw Jones amplitudes. All derived quantities are computed
+    at plot time by _jones_cols_to_obs().
+ 
+    Columns saved:
+        T_j00_re, T_j00_im, T_j10_re, T_j10_im,
+        T_j01_re, T_j01_im, T_j11_re, T_j11_im,
+        R_j00_re, R_j00_im, ... (same for R)
+    """
+    def _components(J, prefix):
         return {
-            'ss': float(abs(j00)**2),
-            'ps': float(abs(j10)**2),
-            'sp': float(abs(j01)**2),
-            'pp': float(abs(j11)**2),
-            'S0s': float(abs(j00)**2 + abs(j10)**2),
-            'S1s': float(abs(j00)**2 - abs(j10)**2),
-            'S2s': float(2*np.real(j00*np.conj(j10))),
-            'S3s': float(2*np.imag(j00*np.conj(j10))),
-            'S0p': float(abs(j11)**2 + abs(j01)**2),
-            'S1p': float(abs(j11)**2 - abs(j01)**2),
-            'S2p': float(2*np.real(j11*np.conj(j01))),
-            'S3p': float(2*np.imag(j11*np.conj(j01))),
-            'RR': float(abs(RR)**2),
-            'LL': float(abs(LL)**2),
-            'RL': float(abs(RL)**2),
-            'LR': float(abs(LR)**2),
-            'CD': float(abs(RR)**2 - abs(LL)**2),
-            'total': float((abs(j00)**2 + abs(j10)**2 + abs(j01)**2 + abs(j11)**2) / 2),
+            f'{prefix}j00_re': float(J[0, 0].real),
+            f'{prefix}j00_im': float(J[0, 0].imag),
+            f'{prefix}j10_re': float(J[1, 0].real),
+            f'{prefix}j10_im': float(J[1, 0].imag),
+            f'{prefix}j01_re': float(J[0, 1].real),
+            f'{prefix}j01_im': float(J[0, 1].imag),
+            f'{prefix}j11_re': float(J[1, 1].real),
+            f'{prefix}j11_im': float(J[1, 1].imag),
         }
-    t = stokes_from_jones(T)
-    r = stokes_from_jones(R)
-    return {
-        **{f'T_{k}': v for k, v in t.items()},
-        **{f'R_{k}': v for k, v in r.items()},
-    }
+    return {**_components(T, 'T_'), **_components(R, 'R_')}
 
+def _jones_cols_to_obs(df: pd.DataFrame, prefix: str) -> pd.DataFrame:
+    """
+    Reconstruct all derived observables from stored Jones columns.
+    Operates fully vectorized — no row-wise loops.
+ 
+    prefix : 'T_' or 'R_'
+ 
+    Returns a DataFrame with columns named without prefix, e.g.:
+        ss, ps, sp, pp, S0s, S1s, S2s, S3s, S0p, S1p, S2p, S3p,
+        RR, LL, RL, LR, CD, total
+    Call as:  obs = _jones_cols_to_obs(df, 'R_')
+    Then:     df['R_ss'] = obs['ss']
+    """
+    p = prefix
+    j00 = df[f'{p}j00_re'].values + 1j * df[f'{p}j00_im'].values
+    j10 = df[f'{p}j10_re'].values + 1j * df[f'{p}j10_im'].values
+    j01 = df[f'{p}j01_re'].values + 1j * df[f'{p}j01_im'].values
+    j11 = df[f'{p}j11_re'].values + 1j * df[f'{p}j11_im'].values
+ 
+    # Stack into (N, 2, 2) for batched circular transform
+    J = np.stack([np.stack([j00, j01], axis=-1),
+                  np.stack([j10, j11], axis=-1)], axis=-2)  # (N, 2, 2)
+    U  = np.array([[1, 1], [1j, -1j]]) / np.sqrt(2)
+    Uh = np.conj(U).T
+    Jc = Uh[None] @ J @ U[None]  # (N, 2, 2)
+    RR = Jc[:, 0, 0]; RL = Jc[:, 0, 1]
+    LR = Jc[:, 1, 0]; LL = Jc[:, 1, 1]
+
+    # Unpolarized input Stokes
+    S0u = (np.abs(j00)**2 + np.abs(j10)**2 +
+        np.abs(j01)**2 + np.abs(j11)**2) / 2
+    S1u = ((np.abs(j00)**2 - np.abs(j10)**2) +
+        (np.abs(j01)**2 - np.abs(j11)**2)) / 2
+    S2u = (np.real(j00*np.conj(j10)) +
+        np.real(j01*np.conj(j11)))
+    S3u = (np.imag(j00*np.conj(j10)) +
+        np.imag(j01*np.conj(j11)))
+    
+    # Mask psi and chi where output power is too low to be meaningful
+    mask_s = np.abs(j00)**2 + np.abs(j10)**2 < 1e-3   # s-input too weak
+    mask_p = np.abs(j01)**2 + np.abs(j11)**2 < 1e-3   # p-input too weak
+    mask_u = S0u < 1e-3                                 # unpolarized too weak
+
+    psi_s_vals = 0.5 * np.degrees(np.arctan2(
+                    2*np.real(j00*np.conj(j10)),
+                    np.abs(j00)**2 - np.abs(j10)**2))
+    chi_s_vals =  0.5 * np.degrees(np.arcsin(np.clip(
+                2*np.imag(j00*np.conj(j10)) /
+                (np.abs(j00)**2 + np.abs(j10)**2 + 1e-30), -1, 1)))
+    psi_p_vals =  0.5 * np.degrees(np.arctan2(
+                    2*np.real(j01*np.conj(j11)),
+                    np.abs(j01)**2 - np.abs(j11)**2))
+    chi_p_vals =  0.5 * np.degrees(np.arcsin(np.clip(
+                    2*np.imag(j01*np.conj(j11)) /
+                    (np.abs(j01)**2 + np.abs(j11)**2 + 1e-30), -1, 1)))
+    psi_u_vals = 0.5 * np.degrees(np.arctan2(S2u, S1u))
+    chi_u_vals =  0.5 * np.degrees(np.arcsin(np.clip(
+                    S3u / (S0u + 1e-30), -1, 1)))
+
+    psi_s_vals[mask_s] = np.nan
+    psi_p_vals[mask_p] = np.nan
+    psi_u_vals[mask_u] = np.nan
+    chi_s_vals[mask_s] = np.nan
+    chi_p_vals[mask_p] = np.nan
+    chi_u_vals[mask_u] = np.nan
+ 
+    out = pd.DataFrame({
+        # Intensity Jones elements
+        'ss':    np.abs(j00)**2,
+        'ps':    np.abs(j10)**2,
+        'sp':    np.abs(j01)**2,
+        'pp':    np.abs(j11)**2,
+        # Stokes for s-input
+        'S0s':   np.abs(j00)**2 + np.abs(j10)**2,
+        'S1s':   np.abs(j00)**2 - np.abs(j10)**2,
+        'S2s':   2 * np.real(j00 * np.conj(j10)),
+        'S3s':   2 * np.imag(j00 * np.conj(j10)),
+        # Stokes for p-input
+        'S0p':   np.abs(j11)**2 + np.abs(j01)**2,
+        'S1p':   np.abs(j11)**2 - np.abs(j01)**2,
+        'S2p':   2 * np.real(j11 * np.conj(j01)),
+        'S3p':   2 * np.imag(j11 * np.conj(j01)),
+        # Circular basis
+        'RR':    np.abs(RR)**2,
+        'LL':    np.abs(LL)**2,
+        'RL':    np.abs(RL)**2,
+        'LR':    np.abs(LR)**2,
+        'CD':    np.abs(RR)**2 - np.abs(LL)**2,
+        # Polarization angle and ellipticity for s-input
+        'psi_s':  psi_s_vals,
+        'chi_s':  chi_s_vals,
+        # For p-input
+        'psi_p':  psi_p_vals,  
+        'chi_p':  chi_p_vals,
+        # For unpolarized input
+        'psi_u':  psi_u_vals,
+        'chi_u':  chi_u_vals,
+        # Total Stokes parameters for "unpolarized" input
+        'S0u':  S0u,                        # = total output
+        'S1u':  S1u,                        # linear TE-TM for unpolarized input
+        'S2u':  S2u,                        # diagonal linear for unpolarized input
+        'S3u':  S3u,                        # circular for unpolarized input
+        'S1un': S1u / (S0u + 1e-30),        # normalized versions
+        'S2un': S2u / (S0u + 1e-30),
+        'S3un': S3u / (S0u + 1e-30),
+        # For unpolarized input, the degree of circular polarization of the output:
+        'DCP_u': S3u / (S0u + 1e-30),
+    }, index=df.index)
+    return out
+
+def _add_obs(df: pd.DataFrame) -> pd.DataFrame:
+    for prefix in ('T_', 'R_'):
+        obs = _jones_cols_to_obs(df, prefix)
+        for col in obs.columns:
+            full_col = f'{prefix}{col}'
+            if full_col not in df.columns:
+                df[full_col] = obs[col].values
+    return df
 
 # - Convergence tests
 def convergence_test(conf: object, lam_nm: float = None, elev_deg=5.0, azim_deg=0.0,
@@ -1473,7 +1666,7 @@ def convergence_test(conf: object, lam_nm: float = None, elev_deg=5.0, azim_deg=
     """
     layers = conf.layers
     lam_nm = lam_nm or float(np.median(conf.wavelengths))
-    rot = conf.global_rot or 0.0
+    rot = conf.global_rot if conf.global_rot is not None else 0.0
 
     # print()
     print(f'%--'*30)
@@ -1505,7 +1698,7 @@ def convergence_test_phase(conf:object, lam_nm=None, elev_deg=5.0, azim_deg=0.0,
 
     if lam_nm is None:
         lam_nm = float(np.median(conf.wavelengths))
-    rot = conf.global_rot or 0.0
+    rot = conf.global_rot if conf.global_rot is not None else 0.0
 
     # print()
     print(f'%--'*30)
@@ -1536,7 +1729,7 @@ def scan_wavelengths(conf: object, lam_vals = None, n_basis=25, elev_deg=0.0, az
   
     lam_vals = lam_vals or conf.wavelengths[::4]  # every 5th point for speed
     n_basis = n_basis or conf.n_basis
-    rot = conf.global_rot or 0.0
+    rot = conf.global_rot if conf.global_rot is not None else 0.0
 
     # print()
     print(f'%--'*30)
@@ -1723,6 +1916,118 @@ class ProgressCallback:
                   f"  ({rate:.1f} s/task)",
                   flush=True)
 
+# —— Plot helpers
+def make_cyclic_cmap(name='cyclic_RdBu'):
+    """
+    Cyclic colormap for polarization angle psi.
+    Goes red -> white -> blue -> white -> red, 
+    so psi=0 is white (consistent with RdBu_r at 0),
+    and the ±90° endpoints meet continuously.
+    """
+    from matplotlib.colors import LinearSegmentedColormap
+    # Sample RdBu_r: 0=blue, 0.5=white, 1=red
+    base = plt.cm.RdBu_r
+    # Build: white(0°) -> red(45°) -> white(90°/-90°) -> blue(-45°) -> white(0°)
+    # In [0,1] colormap coordinates: 0->0.5, 0.25->1.0, 0.5->0.5, 0.75->0.0, 1.0->0.5
+    t = np.linspace(0, 1, 512)
+    # Map t to a ping-pong through RdBu_r
+    u = 0.5 + 0.5 * np.sin(2 * np.pi * t)  # oscillates 0.5->1->0.5->0->0.5
+    colors = base(u)
+    return LinearSegmentedColormap.from_list(name, colors)
+
+def _get_panels(preset: str, panels_override=None,
+                S1max=1.0, S3max=1.0, CDmax=1.0) -> list:
+    """
+    Return list of (col, label, cmap, vmin, vmax) for the requested preset.
+    panels_override, if provided, is returned as-is (allows fully custom panels).
+ 
+    Available presets:
+        'crsbr'   — Rss, Rpp, R_S1s, R_S3s, R_CD  (reflection, polarization)
+        'lc'      — R_total, T_total, R_S1s, R_S1p, R_S3s, R_S3p, R_CD
+        'dbr'     — R_total, T_total
+        'full'    — everything: Rss/pp/sp/ps + Stokes + circular
+        'totalstokes' — Total stokes parameters from reflection
+        None      — same as 'crsbr'
+    """
+    if panels_override is not None:
+        return panels_override
+    cyclic_RdBu = make_cyclic_cmap()
+ 
+    match preset:
+        case 'totalstokes' | None:
+            return [
+                ('T_S0u', r'$S_{0}^{(sp)}$', 'magma', 0, 1),
+                ('T_S1un', r'$S_{1}^{(sp)}$', 'RdBu_r', -S1max, S1max),
+                ('T_S2un', r'$S_{2}^{(sp)}$', 'RdBu_r', -S1max, S1max),
+                ('T_DCP_u', r'$S_{3}^{(sp)}$', 'RdBu_r', -CDmax, CDmax),
+                ('T_psi_s', r'$\psi^{(s)}$ (°)', cyclic_RdBu, -90, 90),
+                ('T_chi_s', r'$\chi^{(s)}$ (°)', 'PiYG', -45, 45),
+            ]
+        case 'res2':
+            return [
+                ('T_ss', r'$T_{ss}$', 'magma', 0, 1),
+                # ('T_sp', r'$T_{sp}$', 'magma', 0, 1),
+                # ('T_ps', r'$T_{ps}$', 'magma', 0, 1),
+                ('T_pp', r'$T_{pp}$', 'magma', 0, 1),
+                # ('T_S0s', r'$S_{0}^{(s)}$', 'magma', 0, 1),
+                # ('T_S1s', r'$S_{1}^{(s)}$', 'RdBu_r', -S1max, S1max),
+                ('T_S1un', r'$S_{1}^{(sp)}$', 'RdBu_r', -S1max, S1max),
+                # ('T_S2s', r'$S_{2}^{(s)}$', 'RdBu_r', -S1max, S1max),
+                # ('T_S3s', r'$S_{3}^{(s)}$', 'RdBu_r', -CDmax, CDmax),
+                ('T_S3un', r'$S_{3}^{(sp)}$', 'PiYG', -CDmax, CDmax),
+                ]
+        case 'stokesS':
+            return [
+                ('R_S0s', r'$S_{0}^{(s)}$', 'magma', 0, 1),
+                ('R_S1s', r'$S_{1}^{(s)}$', 'RdBu_r', -S1max, S1max),
+                ('R_S2s', r'$S_{2}^{(s)}$', 'RdBu_r', -S1max, S1max),
+                ('R_S3s', r'$S_{3}^{(s)}$', 'RdBu_r', -CDmax, CDmax),
+                ('R_psi_s', r'$\psi^{(s)}$ (°)', cyclic_RdBu, -90, 90),
+                ('R_chi_s', r'$\chi^{(s)}$ (°)', 'PiYG', -45, 45),
+            ]
+        case 'stokesP':
+            return [
+                ('R_S0p', r'$S_{0}^{(p)}$', 'magma', 0, 1),
+                ('R_S1p', r'$S_{1}^{(p)}$', 'RdBu_r', -S1max, S1max),
+                ('R_S2p', r'$S_{2}^{(p)}$', 'RdBu_r', -S1max, S1max),
+                ('R_S3p', r'$S_{3}^{(p)}$', 'RdBu_r', -CDmax, CDmax),
+                ('R_psi_p', r'$\psi^{(p)}$ (°)', cyclic_RdBu, -90, 90),
+                ('R_chi_p', r'$\chi^{(p)}$ (°)', 'PiYG', -45, 45),
+            ]
+        case 'lc':
+            return [
+                ('R_total', r'$R_{tot}$',            'magma',  0,       1      ),
+                ('T_total', r'$T_{tot}$',            'magma',  0,       1      ),
+                ('R_S1s',   r'$S_1^{(s)}$ TE-TM',   'RdBu_r', -S1max,  S1max  ),
+                ('R_S1p',   r'$S_1^{(p)}$ TE-TM',   'RdBu_r', -S1max,  S1max  ),
+                ('R_S3s',   r'$S_3^{(s)}$ circ',    'PiYG',   -S3max,  S3max  ),
+                ('R_S3p',   r'$S_3^{(p)}$ circ',    'PiYG',   -S3max,  S3max  ),
+                ('R_CD',    r'$|RR|^2-|LL|^2$',      'RdBu_r', -CDmax,  CDmax  ),
+            ]
+        case 'dbr':
+            return [
+                ('R_S0u', r'$R_{tot}$', 'magma', 0, 1),
+                ('T_S0u', r'$T_{tot}$', 'magma', 0, 1),
+            ]
+        case 'full':
+            return [
+                ('R_ss',   r'$R_{ss}$',             'magma',  0,       1      ),
+                ('R_pp',   r'$R_{pp}$',             'magma',  0,       1      ),
+                ('R_sp',   r'$R_{sp}$',             'magma',  0,       1      ),
+                ('R_ps',   r'$R_{ps}$',             'magma',  0,       1      ),
+                ('R_S1s',  r'$S_1^{(s)}$',          'RdBu_r', -S1max,  S1max  ),
+                ('R_S2s',  r'$S_2^{(s)}$',          'RdBu_r', -S1max,  S1max  ),
+                ('R_S3s',  r'$S_3^{(s)}$',          'PiYG',   -S3max,  S3max  ),
+                ('R_S1p',  r'$S_1^{(p)}$',          'RdBu_r', -S1max,  S1max  ),
+                ('R_S3p',  r'$S_3^{(p)}$',          'PiYG',   -S3max,  S3max  ),
+                ('R_RR',   r'$R_{RR}$',             'magma',  0,       1      ),
+                ('R_LL',   r'$R_{LL}$',             'magma',  0,       1      ),
+                ('R_CD',   r'$|RR|^2-|LL|^2$',      'RdBu_r', -CDmax,  CDmax  ),
+            ]
+        case _:
+            raise ValueError(f"Unknown preset '{preset}'. "
+                             f"Choose from: 'totalstokes', 'crsbr', 'lc', 'dbr', 'full', or pass panels=[(col, lbl, cmap, vmin, vmax), ...]")
+
 # —— Study 0 plot ——————————————————————————————————————————————————————————————
 
 def plot_study0(df, conf: object,
@@ -1775,137 +2080,85 @@ def plot_study0(df, conf: object,
 
 # ── Study 1 plot ──────────────────────────────────────────────────────────────
 
-def plot_study1(df, conf: object, rot_deg: float = None, 
-                azim_vals=None, x_col='elev',
-                elev_range=None, S1max=1.0, S3max=1.0, CDmax=1.0,
-                preset: str = None,
+def plot_study1(df, conf,
+                rot_deg=None,
+                azim_vals=None,
+                x_col='elev',
+                elev_range=None,
+                preset='crsbr',
+                panels=None,
+                S1max=1.0, S3max=1.0, CDmax=1.0,
                 save_fig=False):
     """
     E vs k dispersion plots.
-
+ 
     Parameters
     ----------
-    df                   : DataFrame from run_study1 (mirrored recommended)
-    layers               : list of Layer (for title metadata)
-    a                    : lattice constant nm (for title)
-    rot_deg              : which in-plane tensor rotation slice to plot
-    azim_vals            : list of azimuths to show as rows
-    x_col                : 'elev' or 'k_parallel'
-    elev_range           : (min_deg, max_deg) to crop x-axis
-    S1max/S3max/CDmax    : colorbar limits
-    save_fig             : save pdf to OUTPUT_DIR
+    df         : DataFrame from run_study1
+    conf       : RCWAConfig
+    rot_deg    : which global_rot slice to plot (None = use conf.global_rot)
+    azim_vals  : list of azimuths to show as rows (None = use conf.study1.azim_vals)
+    x_col      : 'elev' or 'k_parallel'
+    elev_range : (min_deg, max_deg) to crop x axis
+    preset     : 'crsbr' | 'lc' | 'dbr' | 'full'  (ignored if panels provided)
+    panels     : custom list of (col, label, cmap, vmin, vmax); overrides preset
+    S1max/S3max/CDmax : colorbar limits for Stokes / CD panels
+    save_fig   : save PDF to conf.output_dir
     """
-    layers                          = conf.layers
-    a                               = conf.lattice_const
-    if azim_vals is None: azim_vals = conf.study1.azim_vals
-
-    match preset:
-        case 'LC':
-            panels = [('R_total', r'$R_{tot}$', 'magma', 0, 1),
-                      ('T_total', r'$T_{tot}$', 'magma', 0, 1),
-                      ('R_S0_s',  r'$S_0^{(s)}$',           'magma',  0,      1     ),
-                      ('R_S1_s',  r'$S_1^{(s)}$ TE-TM',    'RdBu_r', -S1max, S1max ),
-                      ('R_S0_p',  r'$S_1^{(p)}$ TE-TM',    'RdBu_r', -S1max, S1max ),
-                      ('R_S1_p',  r'$S_1^{(p)}$ TE-TM',    'RdBu_r', -S1max, S1max ),
-                      ('R_S3_s',  r'$S_3^{(s)}$ circular',  'PiYG',   -S3max, S3max ),
-                      ('R_S3_p',  r'$S_3^{(s)}$ circular',  'PiYG',   -S3max, S3max ),
-                      ('R_CD',      r'$|RR|^2-|LL|^2$', 'RdBu_r', -1, 1),
-                      ]
-        
-        case 'dbr':
-            panels = [('R_total', r'$R_{tot}$', 'magma', 0, 1),
-                      ('T_total', r'$T_{tot}$', 'magma', 0, 1)]
-        case 'crsbr':
-            panels = [
-                # ('R_total',  r'$R_{tot}$',              'magma', 0,     1         ),
-                # ('T_total',  r'$T_{tot}$',              'magma', 0,     1         ),
-                ('R_ss',  r'$R_{s\rightarrow s}$',              'magma', 0,     1         ),
-                ('R_pp',  r'$R_{p\rightarrow p}$',              'magma', 0,     1         ),
-                # ('T_ss',  r'$T_{ss}$',              'magma',  0,      1     ),
-                # ('T_pp',  r'$T_{pp}$',              'magma',  0,      1     ),
-                # ('S0_s',  r'$S_0^{(s)}$',           'magma',  0,      1     ),
-                # ('S0_p',  r'$S_0^{(p)}$',           'magma',  0,      1     ),
-                # ('S1_s',  r'$S_1^{(s)}$ TE-TM',    'RdBu_r', -S1max, S1max ),
-                # ('S1_p',  r'$S_1^{(p)}$ TE-TM',    'RdBu_r', -S1max, S1max ),
-                # ('S3_s',  r'$S_3^{(s)}$ circular',  'PiYG',   -S3max, S3max ),
-                # ('CD',    r'$T_{RR}-T_{LL}$',        'PiYG',   -CDmax, CDmax ),
-                # ('R_s',   r'$R_{s}$',               'magma', 0,     1         ),
-                # ('R_p',   r'$R_{p}$',               'magma', 0,     1         ),
-                
-            ]
-        case _:
-            panels = [
-                ('T_ss',  r'$T_{ss}$',              'magma',  0,      1     ),
-                ('T_pp',  r'$T_{pp}$',              'magma',  0,      1     ),
-                ('S0_s',  r'$S_0^{(s)}$',           'magma',  0,      1     ),
-                ('S1_s',  r'$S_1^{(s)}$ TE-TM',    'RdBu_r', -S1max, S1max ),
-                ('S1_p',  r'$S_1^{(p)}$ TE-TM',    'RdBu_r', -S1max, S1max ),
-                ('S3_s',  r'$S_3^{(s)}$ circular',  'PiYG',   -S3max, S3max ),
-                ('CD',    r'$T_{RR}-T_{LL}$',        'PiYG',   -CDmax, CDmax ),
-                ('R_s',   r'$R_{s}$',               'magma', 0,     1         ),
-                ('R_p',   r'$R_{p}$',               'magma', 0,     1         ),
-                ('R_total',  r'$R_{tot}$',               'magma_r', 0,     1         ),
-                # ('T_ss'       , r'$T_{ss}$', 'magma', 0, 1                                                       ),
-                # ('T_ps'       , r'$T_{ps}$', 'magma', 0, 1                                         ),
-                # ('T_sp'       , r'$T_{sp}$', 'magma', 0, 1                                             ),                                               
-                # ('T_pp'       , r'$T_{pp}$', 'magma', 0, 1                                         ),
-                # ('S0_s'       , r'$S_{0}^{(s)}$', 'magma', 0, 1                                         ),
-                # ('S1_s'       , r'$S_{1}^{(s)}$', 'magma', 0, 1                                         ),
-                # ('S2_s'       , r'$S_{2}^{(s)}$', 'magma', 0, 1                                         ),
-                # ('S3_s'       , r'$S_{3}^{(s)}$', 'magma', 0, 1                                         ),
-                # ('S0_p'       , r'$S_{0}^{(p)}$', 'magma', 0, 1                                         ),
-                # ('S1_p'       , r'$S_{1}^{(p)}$', 'magma', 0, 1                                         ),
-                # ('S2_p'       , r'$S_{2}^{(p)}$', 'magma', 0, 1                                         ),
-                # ('S3_p'       , r'$S_{3}^{(p)}$', 'magma', 0, 1                                         ),
-                # ('T_RR'       , r'$T_{RR}$', 'magma', 0, 1                                         ),
-                # ('T_LL'       , r'$T_{LL}$', 'magma', 0, 1                                         ),
-                # ('T_RL'       , r'$T_{RL}$', 'magma', 0, 1                                         ),
-                # ('T_LR'       , r'$T_{LR}$', 'magma', 0, 1                                         ),
-                # ('CD'         , r'$CD$', 'magma', 0, 1                                         ) ,
-                # ('t_ss_re'    , r'$\Re{t_{ss}}$', 'magma', 0, 1                                             ),
-                # ('t_ps_re'    , r'$\Re{t_{ps}}$', 'magma', 0, 1                                             ),
-                # ('t_sp_re'    , r'$\Re{t_{sp}}$', 'magma', 0, 1                                             ),
-                # ('t_pp_re'    , r'$\Re{t_{pp}}$', 'magma', 0, 1                                             ),
-                # ('R_s'        , r'$R_s$', 'magma', 0, 1                                         ),
-                # ('R_p'        , r'$R_p$', 'magma', 0, 1                                             ),
-                # ('R_total'    , r'$R_{tot}$', 'magma', 0, 1                                             ),
-            ]
-
-    rot_filter      = round(rot_deg         or 0.0, 2)
-    df_rta = df[
-        (df['rot'].round(2)         == rot_filter)
-    ]
-    wl   = sorted(df_rta['lambda0'].unique())
-    nrows, ncols = len(azim_vals), len(panels)
-
+    layers   = conf.layers
+    a        = conf.lattice_const
+    rot_deg  = rot_deg  if rot_deg  is not None else (conf.global_rot or 0.0)
+    azim_vals = azim_vals if azim_vals is not None else conf.study1.azim_vals
+ 
+    # Compute derived quantities on-demand
+    df_ext = _add_obs(df)
+ 
+    panel_list = _get_panels(preset, panels, S1max, S3max, CDmax)
+ 
+    rot_filter = round(float(rot_deg), 2)
+    df_rta = df[df_ext['rot'].round(2) == rot_filter]
+    wl     = sorted(df_rta['lambda0'].unique())
+ 
+    nrows, ncols = len(azim_vals), len(panel_list)
     fig, axes = plt.subplots(nrows, ncols,
-                              figsize=(4*ncols, 4*nrows),
+                              figsize=(4 * ncols, 5 * nrows),
                               layout='constrained',
                               sharex=True, sharey=True)
     if nrows == 1:
         axes = axes[np.newaxis, :]
-
-    rot_tag = f"{rot_deg:.0f}°" if rot_deg is not None else f"0°"
-
-    # title = stack_title(layers, a,
-                        # extras=f'rot = {rot_tag}, tilt = {tilt_tag}')
-    title = f'{_make_unit_cell_title(layers, conf.lattice_const)}\nrot = {rot_tag}'
-    fig.suptitle(title, fontsize=14)
-
+ 
+    rot_tag = f'{rot_deg:.0f}°'
+    if preset == 'dbr':
+        title   = f'{_make_unit_cell_title(layers, a)}\nDBR reflection & transmission'
+        fig.suptitle(title, fontsize=12)
+    else:
+        title   = f'{_make_unit_cell_title(layers, a)}\n$\phi_z$ = {rot_tag}'
+        fig.suptitle(title, fontsize=18)
+   
+ 
     for i, az in enumerate(azim_vals):
         df_s = df_rta[df_rta['azim'] == az].copy()
-        for j, (col, lbl, cmap, vmin, vmax) in enumerate(panels):
+        for j, (col, lbl, cmap, vmin, vmax) in enumerate(panel_list):
             ax = axes[i, j]
+ 
+            if col not in df_s.columns:
+                ax.text(0.5, 0.5, f'"{col}"\nnot in df',
+                        ha='center', va='center', transform=ax.transAxes,
+                        fontsize=8, color='gray')
+                continue
+ 
             pivot = df_s.pivot_table(index='energy', columns='elev', values=col)
             pivot = pivot.sort_index().sort_index(axis=1)
+ 
             if pivot.empty:
                 ax.text(0.5, 0.5, 'No data', ha='center', va='center',
                         transform=ax.transAxes)
                 continue
+ 
             ec = pivot.columns.values
             if x_col == 'k_parallel':
                 lm  = np.median(df_s['lambda0'].values)
-                kc  = (2*np.pi/lm) * np.sin(np.radians(ec)) * 1000
+                kc  = (2 * np.pi / lm) * np.sin(np.radians(ec)) * 1000
                 ext = [kc.min(), kc.max(),
                        pivot.index.min(), pivot.index.max()]
                 xl  = r'$k_\parallel$ ($\mu$m$^{-1}$)'
@@ -1913,90 +2166,116 @@ def plot_study1(df, conf: object, rot_deg: float = None,
                 ext = [ec.min(), ec.max(),
                        pivot.index.min(), pivot.index.max()]
                 xl  = r'$\theta$ (deg)'
+ 
             im = ax.imshow(pivot.values, aspect='auto', origin='lower',
                            interpolation='bicubic', extent=ext,
                            cmap=cmap, vmin=vmin, vmax=vmax)
+ 
             if elev_range is not None:
                 ax.set_xlim(elev_range[0], elev_range[1])
             if i == 0:
-                ax.set_title(lbl, fontsize=12)
+                ax.set_title(lbl, fontsize=14, y=1.15)
             if j == 0:
-                ax.set_ylabel(f'azim={az:.0f} deg\nEnergy (eV)')
+                if preset == 'dbr':
+                    ax.set_ylabel(f'Energy (eV)')
+                else:
+                    ax.set_ylabel(f'azim={az:.0f}°\nEnergy (eV)')
             if i == nrows - 1:
-                ax.set_xlabel(xl)
+                ax.set_xlabel(xl, fontsize=12)
             if j == ncols - 1:
                 ax2 = ax.twinx()
                 ax2.set_ylabel(r'$\lambda$ (nm)')
                 ax2.set_ylim(max(wl), min(wl))
-            fig.colorbar(im, ax=ax, shrink=0.85, pad=0.02)
-
-    if save_fig: 
+            # fig.colorbar(im, ax=ax, shrink=0.85, pad=0.02) 
+            if i == 0: 
+                if vmin == 0:
+                    ticks = [0, 1]
+                elif vmin == -1:
+                    ticks = [-1, 1]
+                elif vmin == -90:
+                    ticks = [-90, 90]
+                elif vmin == -45:
+                    ticks = [-45, 45]
+                else:
+                    ticks = [vmin, round((vmin+vmax)/2, 2), vmax]
+                cax = ax.inset_axes([0, 1.05, 1, 0.05])
+                fig.colorbar(im, ax=ax, shrink=0.5, pad=0.02, ticks=ticks, cax=cax, location='top', aspect=10)   
+ 
+    if save_fig:
         rot_str = f'_rot{int(rot_deg or 0):02d}'
-        fname = conf.output_dir / f"study1_{make_stack_slug(conf)}{rot_str}.pdf"
+        fname = conf.output_dir / f'study1_{make_stack_slug(conf)}{rot_str}.pdf'
         fig.savefig(fname, format='pdf', bbox_inches='tight')
-        print(f"Saved {fname}")
-
+        print(f'Saved {fname}')
+        print(f'%--'*30)
+        print()
+ 
     return fig
 
 # —— Study 2 plots
 
-def plot_kxky_grid(df, conf: object,
-                   energies_eV = None,
-                   save_fig: bool = False,
-                   quantities = None):
+def plot_kxky_grid(df, conf,
+                   energies_eV=None,
+                   preset='crsbr',
+                   panels=None,
+                   S1max=1.0, S3max=1.0, CDmax=1.0,
+                   save_fig=False):
     """
     Grid of kx-ky maps at selected energies.
-    Uses griddata interpolation onto uniform grid with disk mask.
+ 
+    preset / panels : same as plot_study1.
     """
-    layers = conf.layers
-    a = conf.lattice_const
-    rot_deg = conf.global_rot if conf.global_rot is not None else 0.0
+    layers    = conf.layers
+    a         = conf.lattice_const
+    rot_deg   = conf.global_rot if conf.global_rot is not None else 0.0
     output_dir = conf.output_dir
-
-    if quantities is None:
-        quantities = [
-            ('T_ss',  r'$T_{ss}$',        'magma',  0,  1),
-            ('S1_s',  r'$S_1^{(s)}$',     'RdBu_r', -1, 1),
-            ('S3_s',  r'$S_3^{(s)}$',     'PiYG',   -1, 1),
-            ('CD',    r'$T_{RR}-T_{LL}$',  'PiYG',   -1, 1),
-        ]
-
+ 
+    df = _add_obs(df)
+    panel_list = _get_panels(preset, panels, S1max, S3max, CDmax)
+ 
     df_p  = df[df['rot'].round(2) == round(rot_deg, 2)]
     all_e = sorted(df_p['energy'].unique())
-
+ 
     if energies_eV is None:
-        idx = np.linspace(0, len(all_e)-1, 4, dtype=int)
+        idx = np.linspace(0, len(all_e) - 1, 4, dtype=int)
         energies_eV = [all_e[i] for i in idx]
     else:
-        energies_eV = [all_e[np.argmin(np.abs(np.array(all_e)-e))]
+        energies_eV = [all_e[np.argmin(np.abs(np.array(all_e) - e))]
                        for e in energies_eV]
-
+ 
     kx_all = df_p['kx_nm'].values * 1000
     ky_all = df_p['ky_nm'].values * 1000
     kmax   = max(np.abs(kx_all).max(), np.abs(ky_all).max())
     ki     = np.linspace(-kmax, kmax, 400)
     kxi, kyi  = np.meshgrid(ki, ki)
     disk_mask = kxi**2 + kyi**2 > kmax**2
-
-    nrows, ncols = len(energies_eV), len(quantities)
+ 
+    nrows, ncols = len(energies_eV), len(panel_list)
     fig, axes = plt.subplots(nrows, ncols,
-                              figsize=(4*ncols, 4*nrows),
+                              figsize=(4 * ncols, 4 * nrows),
                               layout='constrained',
                               sharex=True, sharey=True)
     if nrows == 1: axes = axes[np.newaxis, :]
     if ncols == 1: axes = axes[:, np.newaxis]
-
+ 
     title = stack_title(layers, a,
                         extras=f'rot = {rot_deg:.0f}°  |  kx-ky map')
     fig.suptitle(title, fontsize=9)
-
+ 
     for i, e_sel in enumerate(energies_eV):
         df_e = df_p[np.isclose(df_p['energy'], e_sel, atol=1e-4)]
         kx   = df_e['kx_nm'].values * 1000
         ky   = df_e['ky_nm'].values * 1000
         ls   = 1239.8 / e_sel
-        for j, (col, lbl, cmap, vmin, vmax) in enumerate(quantities):
+ 
+        for j, (col, lbl, cmap, vmin, vmax) in enumerate(panel_list):
             ax = axes[i, j]
+ 
+            if col not in df_e.columns:
+                ax.text(0.5, 0.5, f'"{col}"\nnot in df',
+                        ha='center', va='center', transform=ax.transAxes,
+                        fontsize=8, color='gray')
+                continue
+ 
             zi = griddata((kx, ky), df_e[col].values,
                           (kxi, kyi), method='linear')
             zi[disk_mask] = np.nan
@@ -2007,60 +2286,70 @@ def plot_kxky_grid(df, conf: object,
                 ax.set_title(lbl, fontsize=10)
             if j == 0:
                 ax.set_ylabel(f'E={e_sel:.3f} eV\n'
-                              f'lam={ls:.0f} nm\n'
+                              f'λ={ls:.0f} nm\n'
                               r'$k_y$ ($\mu$m$^{-1}$)')
             if i == nrows - 1:
                 ax.set_xlabel(r'$k_x$ ($\mu$m$^{-1}$)')
             ax.axhline(0, color='k', lw=0.5, alpha=0.3)
             ax.axvline(0, color='k', lw=0.5, alpha=0.3)
             fig.colorbar(im, ax=ax, shrink=0.85, pad=0.02)
-
+ 
     if save_fig:
-        output_dir = conf.output_dir / (make_study_fname(2, conf) + '_grid.pdf')
-        fig.savefig(output_dir, format='pdf', bbox_inches='tight')
-        print(f"Saved --> {output_dir}")
-
+        out = conf.output_dir / (make_study_fname(2, conf) + '_grid.pdf')
+        fig.savefig(out, format='pdf', bbox_inches='tight')
+        print(f'Saved --> {out}')
+ 
     return fig
 
-def plot_polarization_kxky(df, conf: object, energy_eV, layers=None, a=None,
-                            rot_deg=0.0, save_fig=False):
+def plot_polarization_kxky(df, conf, energy_eV,
+                            input_pol='s',
+                            save_fig=False):
     """
-    kx-ky maps of polarization orientation angle psi and ellipticity chi.
-    C-points (BIC-derived vortices) appear as phase singularities in psi
-    and as spots of pure circular polarization in chi.
+    kx-ky maps of polarization orientation angle ψ and ellipticity χ.
+    C-points appear as phase singularities in ψ and circular spots in χ.
+ 
+    input_pol : 's' or 'p' — which input polarisation to show
     """
-    if layers is None: layers = conf.layers
-    if a      is None: a      = conf.lattice_const
+    layers    = conf.layers
+    a         = conf.lattice_const
+    rot_deg   = conf.global_rot if conf.global_rot is not None else 0.0
     output_dir = conf.output_dir
-
-    df_p    = df[df['rot'].round(2) == round(rot_deg, 2)]
+ 
+    df = _add_obs(df)
+ 
+    df_p     = df[df['rot'].round(2) == round(rot_deg, 2)]
     energies = df_p['energy'].unique()
-    e_sel   = energies[np.argmin(np.abs(energies - energy_eV))]
-    df_e    = df_p[np.isclose(df_p['energy'], e_sel, atol=1e-4)].copy()
-
-    s0 = df_e['S0_s'].values.copy()
+    e_sel    = energies[np.argmin(np.abs(energies - energy_eV))]
+    df_e     = df_p[np.isclose(df_p['energy'], e_sel, atol=1e-4)].copy()
+ 
+    # Choose Stokes columns for the requested input polarisation
+    pol = input_pol.lower()
+    s0col = f'R_S0{pol}'; s1col = f'R_S1{pol}'
+    s2col = f'R_S2{pol}'; s3col = f'R_S3{pol}'
+ 
+    s0 = df_e[s0col].values.copy()
     s0[s0 < 1e-6] = np.nan
-    s1n = df_e['S1_s'].values / s0
-    s2n = df_e['S2_s'].values / s0
-    s3n = df_e['S3_s'].values / s0
-
+    s1n = df_e[s1col].values / s0
+    s2n = df_e[s2col].values / s0
+    s3n = df_e[s3col].values / s0
+ 
     df_e['psi_deg'] = np.degrees(0.5 * np.arctan2(s2n, s1n))
     df_e['chi_deg'] = np.degrees(0.5 * np.arcsin(np.clip(s3n, -1, 1)))
-
+ 
     kx   = df_e['kx_nm'].values * 1000
     ky   = df_e['ky_nm'].values * 1000
     kmax = max(np.abs(kx).max(), np.abs(ky).max())
     ki   = np.linspace(-kmax, kmax, 400)
     kxi, kyi  = np.meshgrid(ki, ki)
     disk_mask = kxi**2 + kyi**2 > kmax**2
-
+ 
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5), layout='constrained')
     title = stack_title(layers, a,
-                        extras=(f'Polarisation map  |  '
-                                f'E={e_sel:.3f} eV  lam={1239.8/e_sel:.0f} nm  '
+                        extras=(f'Polarisation map ({pol}-in)  |  '
+                                f'E={e_sel:.3f} eV  λ={1239.8/e_sel:.0f} nm  '
                                 f'rot={rot_deg:.0f}°'))
     fig.suptitle(title, fontsize=9)
-
+ 
     for ax, qty, cmap, vmin, vmax, lbl in [
         (ax1, 'psi_deg', 'twilight_shifted', -90, 90,
          r'$\psi$ orientation (deg)'),
@@ -2079,92 +2368,75 @@ def plot_polarization_kxky(df, conf: object, energy_eV, layers=None, a=None,
         ax.axhline(0, color='k', lw=0.5, alpha=0.3)
         ax.axvline(0, color='k', lw=0.5, alpha=0.3)
         fig.colorbar(im, ax=ax, label=lbl)
-
+ 
     if save_fig:
-        fname = output_dir / (f"study2_polmap_rot{int(round(rot_deg)):02d}"
-                              f"_E{e_sel:.3f}eV_A{a:.0f}nm.pdf")
+        fname = output_dir / (f'study2_polmap_{pol}in_rot{int(round(rot_deg)):02d}'
+                              f'_E{e_sel:.3f}eV_A{a:.0f}nm.pdf')
         fig.savefig(fname, format='pdf', bbox_inches='tight')
-        print(f"Saved {fname}")
-
+        print(f'Saved {fname}')
+ 
     return fig
 
-def animate_kxky(df, conf: object, layers=None, a=None, rot_deg=0.0,
-                  quantities=None, output_path=None,
-                  fps=4, dpi=150):
+def animate_kxky(df, conf,
+                 rot_deg=None,
+                 preset='crsbr',
+                 panels=None,
+                 S1max=1.0, S3max=1.0, CDmax=1.0,
+                 output_path=None, fps=4, dpi=150):
     """
     Compile kx-ky maps at each wavelength into an mp4.
-
-    Axes are sin(theta)cos(phi) vs sin(theta)sin(phi) — normalized angular
-    coordinates that are energy-independent, so the disk stays the same size
-    across all frames regardless of wavelength.
-
-    Pre-computes all frames before animating to prevent layout jitter.
-    Uses blit=True and fixed subplots_adjust for a stable layout.
-
-    Parameters
-    ----------
-    df          : DataFrame from run_study2 (mirrored recommended)
-    layers      : list of Layer for title and filename (defaults to LAYERS)
-    a           : lattice constant nm (defaults to A)
-    rot_deg     : which in-plane-index-rotation slice to animate
-    quantities  : list of (col, label, cmap, vmin, vmax)
-    output_path : Path or str; auto-generated from stack metadata if None
-    fps         : frames per second
-    dpi         : render resolution
+ 
+    preset / panels : same as plot_study1.
     """
-    if layers    is None: layers    = conf.layers
-    if a         is None: a         = conf.lattice_const
-    if quantities is None:
-        quantities = [
-            ('T_ss',  r'$T_{ss}$',        'magma',  0,  1),
-            ('T_pp',  r'$T_{pp}$',        'magma',  0,  1),
-            ('S1_s',  r'$S_1^{(s)}$',     'RdBu_r', -1, 1),
-            ('S3_s',  r'$S_3^{(s)}$',     'PiYG',   -1, 1),
-            ('CD',    r'$T_{RR}-T_{LL}$',  'PiYG',   -1, 1),
-        ]
+    layers    = conf.layers
+    a         = conf.lattice_const
+    rot_deg   = rot_deg if rot_deg is not None else (conf.global_rot or 0.0)
+ 
+    df = _add_obs(df)
+    panel_list = _get_panels(preset, panels, S1max, S3max, CDmax)
+ 
     if output_path is None:
-        output_path = conf.output_dir / (make_study_fname(2,conf) + '_kxky.mp4')
-
+        output_path = conf.output_dir / (make_study_fname(2, conf) + '_kxky.mp4')
+ 
     df_p = df[df['rot'].round(2) == round(rot_deg, 2)].copy()
     wavelengths = sorted(df_p['lambda0'].unique())
-
-    # Normalized angular coordinates — circle radius is always sin(ELEV2_MAX)
+ 
     df_p['kx_n'] = (np.sin(np.radians(df_p['elev']))
                     * np.cos(np.radians(df_p['azim'])))
     df_p['ky_n'] = (np.sin(np.radians(df_p['elev']))
                     * np.sin(np.radians(df_p['azim'])))
     kmax = np.sin(np.radians(conf.study2.elev_max))
-
+ 
     ki = np.linspace(-kmax, kmax, 300)
     kxi, kyi  = np.meshgrid(ki, ki)
     disk_mask = kxi**2 + kyi**2 > kmax**2
-
-    # Pre-compute all frames so update() is just set_data()
-    print(f"Pre-computing {len(wavelengths)} frames...", end=' ', flush=True)
+ 
+    print(f'Pre-computing {len(wavelengths)} frames...', end=' ', flush=True)
     frames_data = []
     for lam in wavelengths:
         df_e = df_p[np.isclose(df_p['lambda0'], lam, atol=0.1)]
         kx   = df_e['kx_n'].values
         ky   = df_e['ky_n'].values
         frame = {}
-        for col, *_ in quantities:
-            zi = griddata((kx, ky), df_e[col].values,
-                          (kxi, kyi), method='linear')
-            zi[disk_mask] = np.nan
-            frame[col] = zi
+        for col, *_ in panel_list:
+            if col in df_e.columns:
+                zi = griddata((kx, ky), df_e[col].values,
+                              (kxi, kyi), method='linear')
+                zi[disk_mask] = np.nan
+                frame[col] = zi
         frames_data.append(frame)
-    print("done.")
-
-    ncols = len(quantities)
-    fig, axes = plt.subplots(1, ncols, figsize=(4*ncols, 4.5),
+    print('done.')
+ 
+    ncols = len(panel_list)
+    fig, axes = plt.subplots(1, ncols, figsize=(4 * ncols, 4.5),
                               constrained_layout=True)
-    # fig.subplots_adjust(left=0.05, right=0.95, top=0.84,
-    #                     bottom=0.12, wspace=0.35)
-
+    if ncols == 1:
+        axes = [axes]
+ 
     images = []
-    for j, (col, lbl, cmap, vmin, vmax) in enumerate(quantities):
+    for j, (col, lbl, cmap, vmin, vmax) in enumerate(panel_list):
         ax = axes[j]
-        im = ax.imshow(frames_data[0][col],
+        im = ax.imshow(frames_data[0].get(col, np.zeros((300, 300))),
                        extent=[-kmax, kmax, -kmax, kmax],
                        origin='lower', aspect='equal',
                        cmap=cmap, vmin=vmin, vmax=vmax,
@@ -2173,71 +2445,62 @@ def animate_kxky(df, conf: object, layers=None, a=None, rot_deg=0.0,
         ax.set_xlabel(r'$\sin\theta\cos\phi$')
         if j == 0:
             ax.set_ylabel(r'$\sin\theta\sin\phi$')
-        if j > 0:
-            ax.set_yticks([]), ax.set_yticklabels([])
+        else:
+            ax.set_yticks([])
         ax.axhline(0, color='k', lw=0.5, alpha=0.3)
         ax.axvline(0, color='k', lw=0.5, alpha=0.3)
         fig.colorbar(im, ax=ax, shrink=0.85, fraction=0.046, pad=0.04)
         images.append(im)
-
+ 
     stack_lbl = _get_patterned_layer_info(layers)
-    title = fig.suptitle('', fontsize=14) #, y=0.97)
-    # title.set_position([0.5, 0.97])
-
+    title_obj = fig.suptitle('', fontsize=14)
+ 
     def update(frame):
         lam = wavelengths[frame]
-        for j, (col, *_) in enumerate(quantities):
-            images[j].set_data(frames_data[frame][col])
-        title.set_text(
-            rf"""{stack_lbl}  |  P = {a:.0f} nm  |  rot = {rot_deg:.0f}°
-            $\lambda$ = {lam:.0f} nm  $\longleftrightarrow$  E = {1239.8/lam:.3f} eV"""
+        for j, (col, *_) in enumerate(panel_list):
+            if col in frames_data[frame]:
+                images[j].set_data(frames_data[frame][col])
+        title_obj.set_text(
+            rf"""{stack_lbl}  |  P = {a:.0f} nm  |  $\phi_z$ = {rot_deg:.0f}°
+$\lambda$ = {lam:.0f} nm  $\longleftrightarrow$  E = {1239.8/lam:.3f} eV"""
         )
-        return images + [title]
-
+        return images + [title_obj]
+ 
     ani = animation.FuncAnimation(fig, update, frames=len(wavelengths),
-                                   interval=1000/fps, blit=False)
+                                   interval=1000 / fps, blit=False)
     writer = FFMpegWriter(fps=fps, bitrate=2000)
-                        #   extra_args=['-vcodec', 'libx264'])
-                                    #   '-pix_fmt', 'yuv420p'])
     ani.save(str(output_path), writer=writer, dpi=dpi)
     plt.close(fig)
-    print(f"Saved {len(wavelengths)} frames -> {Path(output_path).name}")
+    print(f'Saved {len(wavelengths)} frames -> {output_path.name}')
     return output_path
 
-def animate_polarization(df, conf:object, layers=None, a=None, rot_deg=0.0,
+def animate_polarization(df, conf,
+                          rot_deg=None,
+                          input_pol='s',
                           output_path=None, fps=4, dpi=150):
     """
-    Compile psi (orientation angle) and chi (ellipticity angle) kx-ky maps
+    Compile ψ (orientation angle) and χ (ellipticity) kx-ky maps
     at each wavelength into an mp4.
 
-    C-points appear as phase singularities in psi and as spots of circular
-    polarization in chi. Axes are sin(theta)cos(phi) vs sin(theta)sin(phi).
+    C-points appear as phase singularities in ψ and circular spots in χ.
 
-    Parameters
-    ----------
-    df          : DataFrame from run_study2 (mirrored recommended)
-    layers      : list of Layer for title and filename (defaults to LAYERS)
-    a           : lattice constant nm (defaults to A)
-    rot_deg     : which in-plane-index rotation slice to animate
-    output_path : Path or str; auto-generated from stack metadata if None
-    fps, dpi    : animation settings
+    input_pol : 's' or 'p' — which input polarisation to animate
     """
-    if layers is None: layers = conf.layers
-    if a      is None: a      = conf.lattice_const
+    layers   = conf.layers
+    a        = conf.lattice_const
+    rot_deg  = rot_deg if rot_deg is not None else (conf.global_rot or 0.0)
+
+    df = _add_obs(df)
+
     if output_path is None:
-        output_path = conf.output_dir / (make_study_fname(2, conf) + '_polarization.mp4')
+        pol_tag = input_pol.lower()
+        output_path = conf.output_dir / (
+            make_study_fname(2, conf) + f'_polmap_{pol_tag}in.mp4')
 
     df_p = df[df['rot'].round(2) == round(rot_deg, 2)].copy()
+    wavelengths = sorted(df_p['lambda0'].unique())
 
-    # Compute Stokes-derived polarization angles
-    s0 = df_p['S0_s'].values.copy()
-    s0[s0 < 1e-6] = np.nan
-    df_p['psi_deg'] = np.degrees(
-        0.5 * np.arctan2(df_p['S2_s'].values / s0,
-                          df_p['S1_s'].values / s0))
-    df_p['chi_deg'] = np.degrees(
-        0.5 * np.arcsin(np.clip(df_p['S3_s'].values / s0, -1, 1)))
-
+    # Normalized angular coordinates
     df_p['kx_n'] = (np.sin(np.radians(df_p['elev']))
                     * np.cos(np.radians(df_p['azim'])))
     df_p['ky_n'] = (np.sin(np.radians(df_p['elev']))
@@ -2248,71 +2511,80 @@ def animate_polarization(df, conf:object, layers=None, a=None, rot_deg=0.0,
     kxi, kyi  = np.meshgrid(ki, ki)
     disk_mask = kxi**2 + kyi**2 > kmax**2
 
-    wavelengths = sorted(df_p['lambda0'].unique())
-    print(f"Pre-computing {len(wavelengths)} frames...", end=' ', flush=True)
+    # Choose Stokes columns for requested input polarisation
+    pol   = input_pol.lower()
+    s0col = f'R_S0{pol}'
+    s1col = f'R_S1{pol}'
+    s2col = f'R_S2{pol}'
+    s3col = f'R_S3{pol}'
+
+    print(f'Pre-computing {len(wavelengths)} frames...', end=' ', flush=True)
     frames_data = []
     for lam in wavelengths:
-        df_e = df_p[np.isclose(df_p['lambda0'], lam, atol=0.1)]
-        kx   = df_e['kx_n'].values
-        ky   = df_e['ky_n'].values
-        frame = {}
-        for col in ('psi_deg', 'chi_deg'):
-            zi = griddata((kx, ky), df_e[col].values,
-                          (kxi, kyi), method='linear')
-            zi[disk_mask] = np.nan
-            frame[col] = zi
-        frames_data.append(frame)
-    print("done.")
+        df_e = df_p[np.isclose(df_p['lambda0'], lam, atol=0.1)].copy()
 
-    extent = [-kmax, kmax, -kmax, kmax]
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11, 5),
+        s0 = df_e[s0col].values.copy()
+        s0[s0 < 1e-6] = np.nan
+        s1n = df_e[s1col].values / s0
+        s2n = df_e[s2col].values / s0
+        s3n = df_e[s3col].values / s0
+
+        psi = np.degrees(0.5 * np.arctan2(s2n, s1n))
+        chi = np.degrees(0.5 * np.arcsin(np.clip(s3n, -1, 1)))
+
+        kx = df_e['kx_n'].values
+        ky = df_e['ky_n'].values
+
+        zi_psi = griddata((kx, ky), psi, (kxi, kyi), method='linear')
+        zi_chi = griddata((kx, ky), chi, (kxi, kyi), method='linear')
+        zi_psi[disk_mask] = np.nan
+        zi_chi[disk_mask] = np.nan
+        frames_data.append({'psi': zi_psi, 'chi': zi_chi})
+    print('done.')
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 4.5),
                                     constrained_layout=True)
-    # fig.subplots_adjust(left=0.07, right=0.93, top=0.84,
-    #                     bottom=0.12, wspace=0.35)
-
-    im1 = ax1.imshow(frames_data[0]['psi_deg'],
-                     extent=extent, origin='lower', aspect='equal',
+    im1 = ax1.imshow(frames_data[0]['psi'],
+                     extent=[-kmax, kmax, -kmax, kmax],
+                     origin='lower', aspect='equal',
                      cmap='twilight_shifted', vmin=-90, vmax=90,
-                     interpolation='bilinear')
-    im2 = ax2.imshow(frames_data[0]['chi_deg'],
-                     extent=extent, origin='lower', aspect='equal',
+                     interpolation='none')
+    im2 = ax2.imshow(frames_data[0]['chi'],
+                     extent=[-kmax, kmax, -kmax, kmax],
+                     origin='lower', aspect='equal',
                      cmap='PiYG', vmin=-45, vmax=45,
-                     interpolation='bilinear')
+                     interpolation='none')
 
-    for ax, im, lbl in [
-        (ax1, im1, r'$\psi$ orientation (deg)'),
-        (ax2, im2, r'$\chi$ ellipticity (deg)'),
-    ]:
-        ax.set(title=lbl,
-               xlabel=r'$\sin\theta\cos\phi$',
-               ylabel=r'$\sin\theta\sin\phi$')
+    for ax, lbl in [(ax1, r'$\psi$ orientation (°)'),
+                    (ax2, r'$\chi$ ellipticity (°)')]:
+        ax.set_xlabel(r'$\sin\theta\cos\phi$')
         ax.axhline(0, color='k', lw=0.5, alpha=0.3)
         ax.axvline(0, color='k', lw=0.5, alpha=0.3)
-        fig.colorbar(im, ax=ax, label=lbl, shrink=0.85,
-                     fraction=0.046, pad=0.04)
+        ax.set_title(lbl)
+    ax1.set_ylabel(r'$\sin\theta\sin\phi$')
+    ax2.set_yticks([])
+    fig.colorbar(im1, ax=ax1, shrink=0.85, fraction=0.046, pad=0.04)
+    fig.colorbar(im2, ax=ax2, shrink=0.85, fraction=0.046, pad=0.04)
 
     stack_lbl = _get_patterned_layer_info(layers)
-    title = fig.suptitle('', fontsize=14)# y=0.97)
-    # title.set_position([0.5, 0.97])
+    title_obj = fig.suptitle('', fontsize=12)
 
     def update(frame):
         lam = wavelengths[frame]
-        im1.set_data(frames_data[frame]['psi_deg'])
-        im2.set_data(frames_data[frame]['chi_deg'])
-        title.set_text(
-            rf"""{stack_lbl}  |  P = {a:.0f} nm  |  rot = {rot_deg:.0f}°
-            $\lambda$ = {lam:.0f} nm  $\longleftrightarrow$  E = {1239.8/lam:.3f} eV"""
+        im1.set_data(frames_data[frame]['psi'])
+        im2.set_data(frames_data[frame]['chi'])
+        title_obj.set_text(
+            rf"""{stack_lbl}  |  P = {a:.0f} nm  |  rot = {rot_deg:.0f}°  |  {pol}-in
+$\lambda$ = {lam:.0f} nm  $\longleftrightarrow$  E = {1239.8/lam:.3f} eV"""
         )
-        return [im1, im2, title]
+        return [im1, im2, title_obj]
 
     ani = animation.FuncAnimation(fig, update, frames=len(wavelengths),
-                                   interval=1000/fps, blit=False)
+                                   interval=1000 / fps, blit=False)
     writer = FFMpegWriter(fps=fps, bitrate=2000)
-                        #   extra_args=['-vcodec', 'libx264',
-                        #               '-pix_fmt', 'yuv420p'])
     ani.save(str(output_path), writer=writer, dpi=dpi)
     plt.close(fig)
-    print(f"Saved {len(wavelengths)} frames -> {Path(output_path).name}")
+    print(f'Saved {len(wavelengths)} frames -> {output_path.name}')
     return output_path
 
 # —— Study 3 plots
@@ -2362,9 +2634,9 @@ def plot_mode_scan(conf: object, lam_real, t_ss_vals, layers=None, a=None,
 
     return fig
 
-def plot_study3(conf: object, lam_real, elev_vals, pole_map, layers=None, a=None,
-                azim_deg=0.0, eps_imag=None, log_scale=True,
-                save_fig: bool = False):
+def plot_study3(conf, lam_real, elev_vals, pole_map,
+                azim_deg=0.0, eps_imag=None,
+                log_scale=True, save_fig=False):
     """
     2D dispersion map of S-matrix poles: energy vs angle.
     Bright bands are photonic modes.
@@ -2373,57 +2645,49 @@ def plot_study3(conf: object, lam_real, elev_vals, pole_map, layers=None, a=None
     ----------
     log_scale : bool — use log colorscale (recommended; poles are very sharp)
     """
-    if layers is None: layers = conf.layers
-    if a      is None: a      = conf.lattice_const
+    layers = conf.layers
+    a      = conf.lattice_const
 
     energy   = 1239.8 / lam_real
     fig, axes = plt.subplots(1, 2, figsize=(12, 5), layout='constrained')
 
-    extras = (f'S-matrix poles  |  azim={azim_deg:.0f} deg'
+    extras = (f'S-matrix poles  |  azim={azim_deg:.0f}°'
               + (f'  eps_imag={eps_imag}' if eps_imag is not None else ''))
     fig.suptitle(stack_title(layers, a, extras=extras), fontsize=9)
 
-    # Left: |1/t_ss| on linear or log scale
-    ax = axes[0]
+    ext_elev = [elev_vals.min(), elev_vals.max(),
+                energy.min(),    energy.max()]
+
+    lam_mid = np.median(lam_real)
+    kpar    = (2*np.pi/lam_mid) * np.sin(np.radians(elev_vals)) * 1000
+    ext_k   = [kpar.min(), kpar.max(),
+                energy.min(), energy.max()]
+
     if log_scale:
         from matplotlib.colors import LogNorm
         norm = LogNorm(vmin=max(pole_map.min(), 1e-3), vmax=pole_map.max())
-        im = ax.imshow(pole_map, aspect='auto', origin='lower',
-                       extent=[elev_vals.min(), elev_vals.max(),
-                               energy.min(), energy.max()],
-                       cmap='hot', norm=norm, interpolation='bicubic')
     else:
-        im = ax.imshow(pole_map, aspect='auto', origin='lower',
-                       extent=[elev_vals.min(), elev_vals.max(),
-                               energy.min(), energy.max()],
-                       cmap='hot', interpolation='bicubic')
-    ax.set(xlabel='theta (deg)', ylabel='Energy (eV)',
-           title='|1/t_ss| (log)' if log_scale else '|1/t_ss|')
-    fig.colorbar(im, ax=ax, shrink=0.85)
+        norm = None
 
-    # Right: k_parallel axis (more physical for comparing to experiment)
-    ax = axes[1]
-    lam_mid = np.median(lam_real)
-    kpar    = (2*np.pi/lam_mid) * np.sin(np.radians(elev_vals)) * 1000  # um^-1
-    if log_scale:
-        im2 = ax.imshow(pole_map, aspect='auto', origin='lower',
-                        extent=[kpar.min(), kpar.max(),
-                                energy.min(), energy.max()],
-                        cmap='hot', norm=norm, interpolation='bicubic')
-    else:
-        im2 = ax.imshow(pole_map, aspect='auto', origin='lower',
-                        extent=[kpar.min(), kpar.max(),
-                                energy.min(), energy.max()],
-                        cmap='hot', interpolation='bicubic')
-    ax.set(xlabel=r'$k_\parallel$ ($\mu$m$^{-1}$)', ylabel='Energy (eV)',
-           title='Mode dispersion')
-    fig.colorbar(im2, ax=ax, shrink=0.85)
+    for ax, ext, xlabel, title in [
+        (axes[0], ext_elev, r'$\theta$ (deg)',
+         r'$|1/r_{ss}|$ — mode dispersion'),
+        (axes[1], ext_k,    r'$k_\parallel$ ($\mu$m$^{-1}$)',
+         r'$|1/r_{ss}|$ — mode dispersion'),
+    ]:
+        im = ax.imshow(pole_map, aspect='auto', origin='lower',
+                       extent=ext, cmap='hot', norm=norm,
+                       interpolation='bicubic')
+        ax.set(xlabel=xlabel, ylabel='Energy (eV)', title=title)
+        ticks = [pole_map.min(), pole_map.max()] if not log_scale else None
+        fig.colorbar(im, ax=ax, shrink=0.85, ticks=ticks)
+
     if save_fig:
-        fname = conf.output_dir / f"study3_dispersion_azim{azim_deg:.0f}_A{a:.0f}nm.pdf"
-        fig.savefig(fname, format='pdf', bbox_inches='tight')
-        print(f"Saved {fname}")
-    return fig
+        fname = conf.output_dir / (make_study_fname(3, conf) + '.pdf')
+        fig.savefig(fname, bbox_inches='tight')
+        print(f'Saved {fname}')
 
+    return fig
 # —— Study 0: Wavelength-resolved reflection
 
 def run_study0(conf: object,
@@ -2559,8 +2823,8 @@ def _worker_study2(conf: object, azim_deg: float, elev_deg: float):
     for lam in wavelengths:
         update_simulation_materials(S, float(lam), conf)
         S.SetFrequency(1.0 / lam)
-        T, _  = get_jones_matrices(S, elev_deg, azim_deg, conf)
-        obs   = compute_observables(T)
+        T, R  = get_jones_matrices(S, elev_deg, azim_deg, conf)
+        obs   = compute_observables(T, R)
         kpar  = (2*np.pi/lam) * np.sin(np.radians(elev_deg))
         row   = {
             'rot':        conf.global_rot if conf.global_rot is not None else 0.0,
@@ -2620,75 +2884,109 @@ def quick_test_study2(conf: object):
 
 # —— Study 3: S-matrix pole scan (find modes)
 
-# def _worker_study3(elev_deg, azim_deg, lam_real, eps_imag, n_basis, a, layers):
-#     """
-#     One (elev, azim) across the complex-frequency wavelength scan.
-#     Returns array of complex t_ss values.
-#     """
-#     s_hat, _ = sp_basis(elev_deg, azim_deg)
-#     z_trans, _ = get_z_sample(layers)
-#     t_ss_vals = np.zeros(len(lam_real), dtype=complex)
+def _worker_study3(conf, elev_deg, azim_deg, lam_real, eps_imag):
+    """
+    One (elev, azim) across the complex-frequency wavelength scan.
+    Returns array of complex r_ss values (reflection, s-input s-output).
+    Uses GetAmplitudes with correct azimuth-aware projection.
+    """
+    n_G = None
+    r_ss_vals = np.zeros(len(lam_real), dtype=complex)
 
-#     for i, lam in enumerate(lam_real):
-#         S = build_simulation(layers, float(lam), a=a, n_basis=n_basis)
-#         S.SetFrequency(complex(1.0/lam, eps_imag/lam))
-#         S.SetExcitationPlanewave(IncidenceAngles=(elev_deg, azim_deg),
-#                                   sAmplitude=1, pAmplitude=0, Order=0)
-#         E, _ = S.GetFieldsOnGridNumpy(z_trans, (N_GRID, N_GRID))
-#         Eout = np.array([E[:,:,0].mean(), E[:,:,1].mean(), 0.])
-#         t_ss_vals[i] = np.dot(Eout, s_hat)
+    S = build_simulation(conf, float(lam_real[0]))
 
-#     return t_ss_vals
+    for i, lam in enumerate(lam_real):
+        update_simulation_materials(S, float(lam), conf)
+        S.SetFrequency(complex(1.0/lam, eps_imag/lam))
 
-# def run_study3(conf: object, layers=None, a=None,
-#                elev_vals=None, azim_deg=0.0, phiz_deg=0.0,
-#                lam_center_nm=None, lam_range_nm=100, n_lam=300,
-#                eps_imag=0.005, n_basis=None, n_jobs=None,
-#                print_every=None, save_fig=True):
-#     if layers        is None: layers        = conf.layers
-#     if a             is None: a             = conf.lattice_const
-#     if n_basis       is None: n_basis       = conf.n_basis
-#     if lam_center_nm is None: lam_center_nm = float(np.median(conf.wavelengths))
-#     if elev_vals     is None: elev_vals     = make_elev_vals(conf.study1.elev_max, conf.study1.elev_n)
-#     if n_jobs        is None: n_jobs        = conf.n_jobs
+        phi   = abs(float(elev_deg))
+        theta = float(azim_deg) if elev_deg >= 0 else (float(azim_deg) + 180) % 360
+        S.SetExcitationPlanewave(IncidenceAngles=(phi, theta),
+                                  sAmplitude=1, pAmplitude=0, Order=0)
 
-#     lam_real = np.linspace(lam_center_nm - lam_range_nm/2,
-#                             lam_center_nm + lam_range_nm/2, n_lam)
-#     n_elev   = len(elev_vals)
-#     pole_map = np.zeros((n_lam, n_elev))
+        if n_G is None:
+            n_G = len(S.GetBasisSet())
 
-#     t0 = time.perf_counter()
-#     print(f"Study 3: {n_elev} elev  |  {n_lam} freq pts  |  {n_jobs} workers")
-#     print(f"  lam {lam_real[0]:.0f}-{lam_real[-1]:.0f} nm  eps_imag={eps_imag}")
-#     print(f"  {stack_label(layers, a)}")
+        _, back = S.GetAmplitudes(Layer='L0', zOffset=0)
 
-#     cb  = ProgressCallback(n_elev, label='Study 3', print_every=print_every)
-#     gen = Parallel(n_jobs=n_jobs, verbose=0, return_as='generator')(
-#         delayed(_worker_study3)(el, azim_deg, lam_real, eps_imag, n_basis, a, layers)
-#         for el in elev_vals
-#     )
-#     for k, t_ss_col in enumerate(gen):
-#         cb(t_ss_col)
-#         pole_map[:, k] = 1.0 / (np.abs(t_ss_col) + 1e-10)
+        # Azimuth-aware projection onto true s direction
+        az = np.radians(float(azim_deg))
+        cs, ss = np.cos(az), np.sin(az)
+        r_ss_vals[i] = cs*back[0] + ss*back[n_G]
 
-#     lam_rng = (lam_real[0], lam_real[-1])
-#     fname   = make_study_fname(3, layers, a,
-#                                 phiz_deg=phiz_deg, azim_deg=azim_deg,
-#                                 lam_range=lam_rng, n_basis=n_basis)
-#     df_out = pd.DataFrame(pole_map,
-#                            index=pd.Index(lam_real, name='lambda_nm'),
-#                            columns=pd.Index(elev_vals, name='elev_deg'))
-#     df_out.to_csv(fname)
-#     print(f"Study 3 done in {(time.perf_counter()-t0)/60:.1f} min  ->  {fname.name}")
+    return r_ss_vals
 
-#     if save_fig:
-#         fig = plot_study3(lam_real, elev_vals, pole_map,
-#                           layers=layers, a=a, azim_deg=azim_deg, eps_imag=eps_imag)
-#         fig_fname = make_study_fname(3, layers, a, ext='pdf',
-#                                       phiz_deg=phiz_deg, azim_deg=azim_deg,
-#                                       lam_range=lam_rng)
-#         fig.savefig(fig_fname, bbox_inches='tight')
-#         print(f"  Figure -> {fig_fname.name}")
-#         plt.show()
 
-#     return lam_real, elev_vals, pole_map
+def run_study3(conf,
+               elev_vals=None,
+               azim_deg=0.0,
+               lam_center_nm=None,
+               lam_range_nm=100,
+               n_lam=300,
+               eps_imag=0.005,
+               print_every=None,
+               save_fig=True):
+    """
+    S-matrix pole scan: find photonic mode energies from peaks in |1/r_ss|.
+
+    Sweeps a complex-frequency grid at each (elev, azim) and returns
+    a 2D pole map (lam x elev). Peaks in |1/r_ss| mark mode energies.
+
+    Parameters
+    ----------
+    conf         : RCWAConfig
+    elev_vals    : elevation angles to sweep (defaults to conf.study1.elev_vals)
+    azim_deg     : azimuthal angle
+    lam_center_nm: center wavelength (defaults to median of conf.wavelengths)
+    lam_range_nm : total wavelength range to scan
+    n_lam        : number of wavelength points
+    eps_imag     : imaginary frequency offset (controls pole visibility)
+    print_every  : progress print interval
+    save_fig     : save PDF of pole map
+    """
+    if elev_vals    is None: elev_vals    = conf.study1.elev_vals
+    if lam_center_nm is None: lam_center_nm = float(np.median(conf.wavelengths))
+
+    lam_real = np.linspace(lam_center_nm - lam_range_nm/2,
+                            lam_center_nm + lam_range_nm/2, n_lam)
+    n_elev   = len(elev_vals)
+    pole_map = np.zeros((n_lam, n_elev))
+
+    t0 = time.perf_counter()
+    print(f"Study 3: {n_elev} elev  |  {n_lam} freq pts  |  {conf.n_jobs} workers")
+    print(f"  lam {lam_real[0]:.0f}–{lam_real[-1]:.0f} nm  "
+          f"eps_imag={eps_imag}  azim={azim_deg:.0f}°")
+    print(f"  {stack_label(conf.layers, conf.lattice_const)}")
+
+    cb  = ProgressCallback(n_elev, label='Study 3', print_every=print_every)
+    gen = Parallel(n_jobs=conf.n_jobs, verbose=0, return_as='generator')(
+        delayed(_worker_study3)(conf, el, azim_deg, lam_real, eps_imag)
+        for el in elev_vals
+    )
+    for k, r_ss_col in enumerate(gen):
+        cb(r_ss_col)
+        pole_map[:, k] = 1.0 / (np.abs(r_ss_col) + 1e-10)
+
+    print(f"Study 3 done in {(time.perf_counter()-t0)/60:.1f} min")
+
+    # Save
+    fname    = make_study_fname(3, conf)
+    df_out   = pd.DataFrame(
+        pole_map,
+        index   = pd.Index(lam_real,  name='lambda_nm'),
+        columns = pd.Index(elev_vals, name='elev_deg'),
+    )
+    csv_path = conf.output_dir / (fname + '.csv')
+    df_out.to_csv(csv_path)
+    conf.save(conf.output_dir / (fname + '.json'))
+    print(f"  Saved -> {csv_path.name}")
+
+    if save_fig:
+        fig = plot_study3(conf, lam_real, elev_vals, pole_map,
+                          azim_deg=azim_deg, eps_imag=eps_imag)
+        fig_path = conf.output_dir / (fname + '.pdf')
+        fig.savefig(fig_path, bbox_inches='tight')
+        print(f"  Figure -> {fig_path.name}")
+        plt.show()
+
+    return lam_real, elev_vals, pole_map
