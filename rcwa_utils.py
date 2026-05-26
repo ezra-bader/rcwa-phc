@@ -403,6 +403,38 @@ class DispersiveBiaxialMaterial(Material):
         return rotate_epsilon_tensor(ea, eb, ec,
                                      rot)
     
+# —— Dispersive isotropic (nk from file) ————————————————————————————————
+class DispersiveIsotropicMaterial(Material):
+    '''Dispersive, isotropic. File columns: lambda, n, k.
+    Example: SMILES.'''
+    def __init__(self, name: str, nk_file: str,
+                 delimiter: str = ',', skip_header: int = 0,
+                 reverse: bool = False):
+        self.name = name
+        data = np.loadtxt(Path(nk_file), delimiter = delimiter,
+                          skiprows = skip_header)
+        if reverse:
+            data = data[::-1]
+        lam = data[:,0]
+        ncol   = data[:,1]
+        kcol   = data[:,2]
+        ninterp = interp1d(lam, ncol, kind='cubic', bounds_error=False,fill_value=(ncol[0],ncol[-1]))
+        kinterp = interp1d(lam, kcol, kind='cubic', bounds_error=False,fill_value=(kcol[0],kcol[-1]))
+        self._na = ninterp
+        self._ka = kinterp
+        self._nb = ninterp
+        self._kb = kinterp
+        self._nc = ninterp
+        self._kc = kinterp
+    def epsilon(self, lam_nm: float,
+                rot: float = 0.0,
+                ) -> tuple:
+        ea = (float(self._na(lam_nm)) + 1j*float(self._ka(lam_nm)))**2
+        eb = (float(self._nb(lam_nm)) + 1j*float(self._kb(lam_nm)))**2
+        ec = (float(self._nc(lam_nm)) + 1j*float(self._kc(lam_nm)))**2
+        return rotate_epsilon_tensor(ea, eb, ec,
+                                     rot)
+    
 class Layer:
     '''
     One layer in the stack.
@@ -486,7 +518,7 @@ RU_MATERIALS = {
                                             delimiter=',', reverse=True),
         'ReS2': BirefringentMaterial('ReS2', eps0=18.0, delta_eps=1.7, eps_zz=7.25),
         'LC': UniaxialMaterial('LC',n_o=1.50,n_e=1.91, optical_axis='x'),
-        'SMILES': IsotropicMaterial('SMILES',n=1.5),
+        'SMILES': DispersiveIsotropicMaterial('SMILES',nk_file='SMILES_NK.csv',reverse=False),
         #To be added: liquid crystal with tilt
         #'LC': UniaxialMaterial('LC', n_o=1.50, n_e=1.70)
         #To be added: DBR layer components
@@ -828,6 +860,11 @@ def plot_refractive_index(conf: object, layers=None, materials=None,
                 ('b', 'darkmagenta', 'olivedrab',
                  lambda l: (float(mat._nb(l)), float(mat._kb(l)))),
             ]
+        elif isinstance(mat, DispersiveIsotropicMaterial):
+            axes_defs = [
+                ('b', 'darkmagenta', 'olivedrab',
+                 lambda l: (float(mat._nb(l)), float(mat._kb(l)))),
+            ]
         else:
             axes_defs = [
                 ('xx', 'C0', 'C1', lambda l: (
@@ -851,9 +888,12 @@ def plot_refractive_index(conf: object, layers=None, materials=None,
             n_vals = [nk_fn(l)[0] for l in lam_plot]
             k_vals = [nk_fn(l)[1] for l in lam_plot]
             ax.plot(lam_plot, n_vals, color=nc, label=f'$n_{{{axis_label}}}$')
-            ax.plot(lam_plot, k_vals, color=kc, label=f'$k_{{{axis_label}}}$', ls='--')
+            ax.set_ylabel('n')
             ax.set_xlabel('$\\lambda$ (nm)')
-            ax.set_ylabel('n, k')
+            ax2 = ax.twinx()
+            ax2.plot(lam_plot, k_vals, color=kc, label=f'$k_{{{axis_label}}}$', ls='--')
+            ax2.set_ylabel('k')
+            ax2.tick_params(axis='y')
             ax.legend(fontsize=8)
             ax.grid(True, alpha=0.2)
             ax.set_xlim(lam_min,lam_max)
