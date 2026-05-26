@@ -1020,7 +1020,6 @@ def plot_unit_cell(conf: object = None, save_fig=False, title=None):
 
     transform, z_plot_total = _make_z_transform(layers, z_positions)
 
-    # -- draw_box: solid rectangular box ──────────────────────────────────────
     def draw_box(ax, x0, y0, z0, dx, dy, dz, fc, ec, alpha, label=None, zsort_override=None):
         x1, y1, z1 = x0+dx, y0+dy, z0+dz
         faces = [
@@ -1032,12 +1031,12 @@ def plot_unit_cell(conf: object = None, save_fig=False, title=None):
             [[x1,y0,z0],[x1,y1,z0],[x1,y1,z1],[x1,y0,z1]],
         ]
         poly = Poly3DCollection(faces, alpha=alpha, facecolor=fc,
-                                 edgecolor=ec, linewidth=0.8, label=label, zorder=-z0)
-        if zsort_override:
-            poly._sort_zpos=zsort_override
+                                edgecolor=ec, linewidth=0.8, label=label)
+        # Default: sort by layer midpoint z. Lower z0 = closer to viewer (z inverted),
+        # so we want those drawn last → higher _sort_zpos.
+        poly._sort_zpos = zsort_override if zsort_override is not None else (z0 + dz / 2)
         ax.add_collection3d(poly)
 
-    # -- draw_hole_slab: slab with square hole ─────────────────────────────────
     def draw_hole_slab(ax, z0, dz, fc, ec, w, label=None):
         cx = cy = a / 2
         hx0, hx1 = cx - w/2, cx + w/2
@@ -1056,13 +1055,15 @@ def plot_unit_cell(conf: object = None, save_fig=False, title=None):
         for k in range(4):
             k1 = (k+1) % 4
             faces.append([[ox[k],oy[k],zb],[ox[k1],oy[k1],zb],
-                           [ox[k1],oy[k1],zt],[ox[k],oy[k],zt]])
+                        [ox[k1],oy[k1],zt],[ox[k],oy[k],zt]])
             faces.append([[ix[k1],iy[k1],zb],[ix[k],iy[k],zb],
-                           [ix[k],iy[k],zt],[ix[k1],iy[k1],zt]])
+                        [ix[k],iy[k],zt],[ix[k1],iy[k1],zt]])
         poly = Poly3DCollection(faces, alpha=0.6, facecolor=fc,
-                                 edgecolor='none', linewidth=0, label=label, zorder=-z0)
+                                edgecolor='none', linewidth=0, label=label)
+        # Same convention: deeper layers (larger z0) drawn first
+        poly._sort_zpos = (z0 + dz / 2)
         ax.add_collection3d(poly)
-        ek = dict(color=ec, lw=3, alpha=0.7,zorder=-z0)#0.4)
+        ek = dict(color=ec, lw=0.8, alpha=0.7, zorder=int(-z0 * 100))
         for (x,y) in [(0,0),(a,0),(a,a),(0,a)]:
             ax.plot([x,x],[y,y],[zb,zt], **ek)
         for (x,y) in [(hx0,hy0),(hx1,hy0),(hx1,hy1),(hx0,hy1)]:
@@ -1070,7 +1071,7 @@ def plot_unit_cell(conf: object = None, save_fig=False, title=None):
         for z in [zb, zt]:
             ax.plot([0,a,a,0,0],[0,0,a,a,0],[z]*5, **ek)
             ax.plot([hx0,hx1,hx1,hx0,hx0],[hy0,hy0,hy1,hy1,hy0],[z]*5, **ek)
-
+    
     # -- If layers have drastically different thicknesses, may want to compress some in z:
     def draw_box_t(ax, x0, y0, z0_real, dx, dy, dz_real, fc, ec, alpha, label=None, zsort_override=None):
             """draw_box but with z coordinates transformed to plot space."""
@@ -1122,9 +1123,9 @@ def plot_unit_cell(conf: object = None, save_fig=False, title=None):
             w1, w2, x1, y1, x2, y2 = layer.get_cuboid_geometry(a)
             air_fc, air_ec, air_al = _mat_color('Air')
             for ax in [ax3d, ax3dside]:
-                draw_box_t(ax, 0, 0, z0, a, a, h, air_fc, air_ec, air_al, label=None, zsort_override=None)
-                draw_box_t(ax, x1-w1/2, y1-w1/2, z0, w1, w1, h, fc, ec, 0.9, label=lbl, zsort_override=-z0p-500)
-                draw_box_t(ax, x2-w2/2, y2-w2/2, z0, w2, w2, h, fc, ec, 0.9, label=None, zsort_override=-z0p-500)
+                draw_box_t(ax, 0, 0, z0, a, a, h, air_fc, air_ec, air_al, label=None)
+                draw_box_t(ax, x1-w1/2, y1-w1/2, z0, w1, w1, h, fc, ec, 0.9, label=lbl)
+                draw_box_t(ax, x2-w2/2, y2-w2/2, z0, w2, w2, h, fc, ec, 0.9, label=None)
                 lbl = None
 
         else:
@@ -1148,9 +1149,16 @@ def plot_unit_cell(conf: object = None, save_fig=False, title=None):
             case '3D view':
                 ax.set_xlim(0, a)
                 ax.set_ylim(0, a)
+                n_ticks = 5  # 0, two middle, max
+                raw = np.linspace(0, a, n_ticks)
+                ticks = [0] + [round(v / 10) * 10 for v in raw[1:-1]] + [int(a)]
+                ax.set_xticks(ticks)
+                ax.set_yticks(ticks)
+
                 ax.set_zlim(0, z_plot_total)
                 ax.set_xlabel('x (nm)', fontsize=10)
                 ax.set_ylabel('y (nm)', fontsize=10)
+                
                 ax.zaxis.set_rotate_label(False)
                 ax.set_zlabel(f'z\n$\downarrow$', fontsize=10, labelpad=-10)
                 # ax.set_zticks(ztick_plots)
@@ -1169,6 +1177,11 @@ def plot_unit_cell(conf: object = None, save_fig=False, title=None):
                 ax.set_ylim(0, a)
                 ax.set_zlim(0, z_plot_total)
                 ax.set_xlabel('x (nm)', fontsize=10,labelpad=0)
+                n_ticks = 5  # 0, two middle, max
+                raw = np.linspace(0, a, n_ticks)
+                ticks = [0] + [round(v / 10) * 10 for v in raw[1:-1]] + [int(a)]
+                ax.set_xticks(ticks)
+
                 # ax.set_ylabel('y (nm)', fontsize=10)
                 ax.invert_xaxis()
                 ax.invert_zaxis()
@@ -1963,6 +1976,11 @@ def _get_panels(preset: str, panels_override=None,
                 ('T_psi_s', r'$\psi^{(s)}$ (°)', cyclic_RdBu, -90, 90),
                 ('T_chi_s', r'$\chi^{(s)}$ (°)', 'PiYG', -45, 45),
             ]
+        case 'psichiTE':
+            return [
+                ('T_psi_s', r'$\psi^{(s)}$ (°)', cyclic_RdBu, -90, 90),
+                ('T_chi_s', r'$\chi^{(s)}$ (°)', 'PiYG', -45, 45),
+            ]
         case 'res2':
             return [
                 ('T_ss', r'$T_{ss}$', 'magma', 0, 1),
@@ -2396,7 +2414,7 @@ def animate_kxky(df, conf,
     panel_list = _get_panels(preset, panels, S1max, S3max, CDmax)
  
     if output_path is None:
-        output_path = conf.output_dir / (make_study_fname(2, conf) + '_kxky.mp4')
+        output_path = conf.output_dir / (make_study_fname(2, conf) + f'_kxky_preset-{preset}.mp4')
  
     df_p = df[df['rot'].round(2) == round(rot_deg, 2)].copy()
     wavelengths = sorted(df_p['lambda0'].unique())
