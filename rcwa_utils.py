@@ -519,6 +519,7 @@ RU_MATERIALS = {
         'ReS2': BirefringentMaterial('ReS2', eps0=18.0, delta_eps=1.7, eps_zz=7.25),
         'LC': UniaxialMaterial('LC',n_o=1.50,n_e=1.91, optical_axis='x'),
         'SMILES': DispersiveIsotropicMaterial('SMILES',nk_file='SMILES_NK.csv',reverse=False),
+        # 'WS2': DispersiveIsotropicMaterial('WS2', nk_file='ws2_exciton620nm.csv')
         #To be added: liquid crystal with tilt
         #'LC': UniaxialMaterial('LC', n_o=1.50, n_e=1.70)
         #To be added: DBR layer components
@@ -1026,7 +1027,7 @@ def _make_zticks_transformed(layers, z_positions, transform, compress_threshold_
 
     return tick_reals, tick_plots, tick_labels
 
-def plot_unit_cell(conf: object = None, save_fig=False, title=None):
+def plot_unit_cell(conf: object = None, save_fig=False, title=None, axesOn: bool = True, gridOn: bool = True):
     '''
     2D top-down view + 3D isometric view + 3D side view of the layer stack.
     Automatically reads geometry and colors from the LAYERS list.
