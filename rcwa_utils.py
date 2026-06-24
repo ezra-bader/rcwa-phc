@@ -905,7 +905,7 @@ def plot_refractive_index(conf: object, layers=None, materials=None,
 
 def _make_unit_cell_title(layers: list, a: float) -> str:
     '''Builds compact stack title for plot_unit_cell, collapsing repeating (nH, nL) or (nL, nH) DBR pairs.'''
-    # Build a flat list of (mat_name, thickness, pattern) entries, skipping Air padding
+    # Build a flat list of (mat_name, thickness, pattern, layer rot) entries, skipping Air padding
     entries = []
     for i, L in enumerate(layers):
         mat = L.material if isinstance(L.material, str) else L.get_material().name
@@ -913,7 +913,7 @@ def _make_unit_cell_title(layers: list, a: float) -> str:
         is_last  = (i == len(layers) - 1)
         if mat == 'Air' and L.pattern is None and (is_first or is_last):
             continue
-        entries.append((mat, L.thickness, L.pattern, L.ff))
+        entries.append((mat, L.thickness, L.pattern, L.ff, L.layer_rot))
 
     # Greedily collapse runs of alternating 2-layer pairs (DBR detection)
     collapsed = []
@@ -934,15 +934,17 @@ def _make_unit_cell_title(layers: list, a: float) -> str:
                 i = j
                 continue
         # Not a repeating pair — format single layer normally
-        mat, thick, pat, ff = entries[i]
+        mat, thick, pat, ff, lrot = entries[i]
         if thick >= 1000:
             seg = f'{mat} {thick/1000:.2f}µm'
         else:
             seg = f'{mat} {thick:.0f}nm'
         if pat in ('hole', 'pillar'):
-            seg += f' ({pat} ff={ff})'
+            seg += f' ({pat}, ff={ff})'
         elif pat == 'cuboids':
             seg += f' (cuboids)'
+        if lrot:
+            seg += f' rot {lrot}°'
         collapsed.append(seg)
         i += 1
 
@@ -2224,7 +2226,7 @@ def plot_study1(df, conf,
             else:
                 ext = [ec.min(), ec.max(),
                        pivot.index.min(), pivot.index.max()]
-                xl  = r'$\theta$ (deg)'
+                xl  = r'$\theta$ (°)'
  
             im = ax.imshow(pivot.values, aspect='auto', origin='lower',
                            interpolation='bicubic', extent=ext,
@@ -2262,7 +2264,7 @@ def plot_study1(df, conf,
  
     if save_fig:
         rot_str = f'_rot{int(rot_deg or 0):02d}'
-        fname = conf.output_dir / f'study1_{make_stack_slug(conf)}{rot_str}.pdf'
+        fname = conf.output_dir / f'study1_{make_stack_slug(conf)}{rot_str}_{preset}.pdf'
         fig.savefig(fname, format='pdf', bbox_inches='tight')
         print(f'Saved {fname}')
         print(f'%--'*30)
@@ -2354,7 +2356,7 @@ def plot_kxky_grid(df, conf,
             fig.colorbar(im, ax=ax, shrink=0.85, pad=0.02)
  
     if save_fig:
-        out = conf.output_dir / (make_study_fname(2, conf) + '_grid.pdf')
+        out = conf.output_dir / (make_study_fname(2, conf) + f'_grid_{preset}.pdf')
         fig.savefig(out, format='pdf', bbox_inches='tight')
         print(f'Saved --> {out}')
  
